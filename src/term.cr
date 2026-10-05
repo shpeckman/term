@@ -23,15 +23,18 @@ class Term
   IDLE        = 1.hour
   SCREEN      = {"\e[?1049h", "\e[?1049l"}
   MODES       = [
-    {"\e[>31u",        "\e[<u"},
-    {"\e[?2048h",      "\e[?2048l"},
+    {"\e[>31u", "\e[<u"},
+    {"\e[?2048h", "\e[?2048l"},
     {"\e[?1003;1016h", "\e[?1003;1016l"},
-    {"\e[?1004h",      "\e[?1004l"},
-    {"\e[?2033h",      "\e[?2033l"},
-    {"\e[?2031h",      "\e[?2031l"},
-    {"\e[?5522h",      "\e[?5522l"},
-    {"\e[16t",         ""},
+    {"\e[?1004h", "\e[?1004l"},
+    {"\e[?2033h", "\e[?2033l"},
+    {"\e[?2031h", "\e[?2031l"},
+    {"\e[?5522h", "\e[?5522l"},
+    {"\e[16t", ""},
   ]
+  {% if compare_versions(Crystal::VERSION, "1.19.0") >= 0 %}
+    STARTED = Time.instant
+  {% end %}
   DIACRITICS = [
     0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346, 0x034a, 0x034b, 0x034c,
     0x0350, 0x0351, 0x0352, 0x0357, 0x035b, 0x0363, 0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369,
@@ -73,11 +76,11 @@ class Term
   end
 
   enum Named
-    Tab       =     9
-    Enter     =    13
-    Escape    =    27
-    Backspace =   127
-    Insert    = 57348
+    Tab         =     9
+    Enter       =    13
+    Escape      =    27
+    Backspace   =   127
+    Insert      = 57348
     Delete
     Left
     Right
@@ -633,23 +636,23 @@ class Term
   struct Config
     property alternate_screen = true
     property app_name : String? = nil
-    property dnd_id             = 0
-    property event_buffer       = 1024
-    property query_timeout      = 1.second
-    property clipboard_timeout  = 30.seconds
-    property transfer_timeout   = 30.seconds
-    property hold_repeats       = 3
-    property hold_after         = 500.milliseconds
-    property multi_tap_window   = 300.milliseconds
-    property sequence_timeout   = 1.second
-    property click_radius       = 4
-    property click_window       = 300.milliseconds
+    property dnd_id = 0
+    property event_buffer = 1024
+    property query_timeout = 1.second
+    property clipboard_timeout = 30.seconds
+    property transfer_timeout = 30.seconds
+    property hold_repeats = 3
+    property hold_after = 500.milliseconds
+    property multi_tap_window = 300.milliseconds
+    property sequence_timeout = 1.second
+    property click_radius = 4
+    property click_window = 300.milliseconds
     property multi_click_window = 400.milliseconds
-    property long_press_after   = 500.milliseconds
-    property hover_dwell_after  = 500.milliseconds
-    property scroll_window      = 50.milliseconds
-    property swipe_velocity     = 500.0
-    getter chords    = {} of String => Array(Int32)
+    property long_press_after = 500.milliseconds
+    property hover_dwell_after = 500.milliseconds
+    property scroll_window = 50.milliseconds
+    property swipe_velocity = 500.0
+    getter chords = {} of String => Array(Int32)
     getter sequences = {} of String => Array(Int32)
     getter shortcuts = {} of String => Shortcut
 
@@ -670,8 +673,8 @@ class Term
   end
 
   private class Held
-    getter key     : Key
-    getter at      : Time::Span
+    getter key : Key
+    getter at : Time::Span
     getter latency : Time::Span
     getter overlap : Int32
     property repeats = 0
@@ -689,8 +692,8 @@ class Term
   private class Transfer
     getter data = {} of String => IO::Memory
     getter? solicited : Bool
-    getter? primary   : Bool
-    getter password   : String?
+    getter? primary : Bool
+    getter password : String?
     @carry = ""
 
     def initialize(@solicited, @primary, @password)
@@ -701,7 +704,7 @@ class Term
       @carry += chunk
       return unless @carry.bytesize % 4 == 0
       encoded = @carry
-      @carry  = ""
+      @carry = ""
       Base64.decode(encoded, io)
     end
   end
@@ -760,35 +763,35 @@ class Term
   getter events : Channel(Event)
   getter output : Channel(Output)
 
-  @state       = State::Ground
-  @string      = 0_u8
-  @seq         = IO::Memory.new
-  @values      = [] of Int32
-  @starts      = [] of Int32
-  @cell_width  = 0
+  @state = State::Ground
+  @string = 0_u8
+  @seq = IO::Memory.new
+  @values = [] of Int32
+  @starts = [] of Int32
+  @cell_width = 0
   @cell_height = 0
   @transfer : Transfer?
   @waiting = {} of {Query, String} => Deque(Channel(Reply))
-  @chains  = {} of String => Chain
-  @chain   = ""
-  @mux         : String
+  @chains = {} of String => Chain
+  @chain = ""
+  @mux : String
   @credentials : String
-  @teardown    : String
+  @teardown : String
   @accepting = Atomic(Bool).new(false)
-  @offering  = Atomic(Bool).new(false)
+  @offering = Atomic(Bool).new(false)
 
-  @held     = {} of Int32 => Held
-  @latched  = Set(String).new
-  @lone     = Set(Int32).new
-  @timers   = [] of Timer
+  @held = {} of Int32 => Held
+  @latched = Set(String).new
+  @lone = Set(Int32).new
+  @timers = [] of Timer
   @physical = {} of {Int32, Mods} => String
   @symbolic = {} of {Int32, Mods} => String
-  @root     = Node.new
+  @root = Node.new
   @node : Node
   @last_press = Time::Span.zero
-  @tap_code   = 0
-  @tap_at     = Time::Span.zero
-  @tap_count  = 0
+  @tap_code = 0
+  @tap_at = Time::Span.zero
+  @tap_count = 0
 
   @buttons = Set(Mouse::Button).new
   @press : Mouse?
@@ -796,28 +799,28 @@ class Term
   @last : Mouse?
   @last_at = Time::Span.zero
   @click : Mouse?
-  @click_at    = Time::Span.zero
+  @click_at = Time::Span.zero
   @click_count = 0
   @scroll : Mouse?
-  @scroll_at    = Time::Span.zero
-  @scroll_from  = Time::Span.zero
+  @scroll_at = Time::Span.zero
+  @scroll_from = Time::Span.zero
   @scroll_count = 0
-  @dragging     = false
-  @inside       = false
-  @dwelling     = false
+  @dragging = false
+  @inside = false
+  @dwelling = false
 
   def initialize(@config : Config = Config.new, @input : IO::FileDescriptor = STDIN, @io : IO::FileDescriptor = STDOUT)
-    @events      = Channel(Event).new(@config.event_buffer)
-    @output      = Channel(Output).new(256)
-    @raw         = Channel(Raw).new(256)
-    @pending     = Channel(Request).new(256)
-    @stop        = Channel(Nil).new
+    @events = Channel(Event).new(@config.event_buffer)
+    @output = Channel(Output).new(256)
+    @raw = Channel(Raw).new(256)
+    @pending = Channel(Request).new(256)
+    @stop = Channel(Nil).new
     @reader_done = Channel(Nil).new
     @writer_done = Channel(Nil).new
     @credentials = @config.app_name.try do |name|
       ":pw=#{Base64.strict_encode(UUID.random.to_s)}:name=#{Base64.strict_encode(name)}"
     end || ""
-    @mux  = keys(':', {'i', @config.dnd_id})
+    @mux = keys(':', {'i', @config.dnd_id})
     @node = @root
     @config.sequences.each do |name, codes|
       codes.reduce(@root) { |node, code| node.children.put_if_absent(code) { Node.new } }.action = name
@@ -825,7 +828,7 @@ class Term
     @config.shortcuts.each do |name, shortcut|
       (shortcut.physical ? @physical : @symbolic)[{shortcut.code, shortcut.mods}] = name
     end
-    modes     = @config.alternate_screen ? [SCREEN] + MODES : MODES
+    modes = @config.alternate_screen ? [SCREEN] + MODES : MODES
     @teardown = modes.reverse.join(&.[1])
     @input.raw! if @input.tty?
     @input.read_timeout = POLL
@@ -928,7 +931,7 @@ class Term
       io << "\e]5522;type=write" << location(primary) << @credentials << ST
       items.each do |mime, data|
         encoded = Base64.strict_encode(mime)
-        offset  = 0
+        offset = 0
         loop do
           io << "\e]5522;type=wdata:mime=" << encoded << ';'
           Base64.strict_encode(data[offset, Math.min(CHUNK, data.size - offset)], io)
@@ -1003,7 +1006,7 @@ class Term
   end
 
   def delete_images(target : Delete = Delete::Visible, free : Bool = false, id : UInt32 = 0, number : UInt32 = 0, placement : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, z : Int32 = 0) : Nil
-    letter  = DELETES[target]
+    letter = DELETES[target]
     control = keys(',', {'a', 'd'}, {'d', free ? letter.upcase : letter}, {'i', id}, {'I', number}, {'p', placement}, {'x', x}, {'y', y}, {'z', z})
     @output.send("\e_G#{control}#{ST}")
   end
@@ -1025,7 +1028,7 @@ class Term
   end
 
   def notify(notice : Notice) : String
-    id      = notice.id || UUID.random.to_s
+    id = notice.id || UUID.random.to_s
     actions = "#{"report," if notice.report}#{"-" unless notice.focus}focus"
     meta = String.build do |io|
       io << "i=" << id
@@ -1082,7 +1085,7 @@ class Term
     request(Query::DndSupport, dnd_code("t=q"), limit, "", true).as?(Bool) || false
   end
 
-  def accept_drops(*mimes : String, remote : Bool = false) : Nil
+  def accept_drops(*mimes, remote : Bool = false) : Nil
     @accepting.set(true)
     machine = Term.machine_id if remote
     @output.send("#{dnd_code("t=a", mimes.join(' '))}#{dnd_code("t=a:x=1", machine) if machine}")
@@ -1093,7 +1096,7 @@ class Term
     @output.send(dnd_code("t=A"))
   end
 
-  def drop_reply(operation : Operation = Operation::None, *mimes : String) : Nil
+  def drop_reply(operation : Operation = Operation::None, *mimes) : Nil
     @output.send(dnd_code(keys(':', {'t', 'm'}, {'o', operation.value}), mimes.join(' ')))
   end
 
@@ -1228,7 +1231,7 @@ class Term
     data = pixels.data
     size = pixels.size
     if pixels.compress && pixels.medium.direct?
-      size   = data.size if pixels.format.png?
+      size = data.size if pixels.format.png?
       packed = IO::Memory.new
       Compress::Zlib::Writer.open(packed, &.write(data))
       data = packed.to_slice
@@ -1256,7 +1259,7 @@ class Term
   end
 
   private def draw(control : String, encoded : String, id : UInt32, number : UInt32, quiet : Quiet, limit : Time::Span, action : String = "") : Ack?
-    more     = merge(',', action, keys(',', {'q', quiet.value}))
+    more = merge(',', action, keys(',', {'q', quiet.value}))
     sequence = String.build { |io| apc(io, control, encoded, more) }
     if quiet.none? && (id != 0 || number != 0)
       request(Query::Graphics, sequence, limit, number != 0 ? "I#{number}" : "i#{id}").as?(Ack)
@@ -1328,8 +1331,8 @@ class Term
 
   private def route(query : Query, reply : Reply, key : String = "", strict : Bool = false) : Bool
     admit
-    slot      = {query, key}
-    queue     = @waiting[slot]? || return false
+    slot = {query, key}
+    queue = @waiting[slot]? || return false
     delivered = false
     while waiter = queue.shift?
       delivered = deliver(waiter, reply)
@@ -1464,7 +1467,7 @@ class Term
     @values.clear
     @starts.clear
     @starts << 0
-    current  = MISSING
+    current = MISSING
     negative = false
     bytes.each do |byte|
       case byte
@@ -1474,7 +1477,7 @@ class Term
         negative = true
       when 0x3a, 0x3b
         @values << (negative && current != MISSING ? -current : current)
-        current  = MISSING
+        current = MISSING
         negative = false
         @starts << @values.size if byte == 0x3b
       end
@@ -1484,7 +1487,7 @@ class Term
 
   private def param(group : Int32, sub : Int32 = 0, default : Int32 = MISSING) : Int32
     start = @starts[group]? || return default
-    stop  = @starts[group + 1]? || @values.size
+    stop = @starts[group + 1]? || @values.size
     index = start + sub
     return default unless index < stop
     value = @values[index]
@@ -1492,7 +1495,7 @@ class Term
   end
 
   private def csi(final : UInt8) : Nil
-    bytes  = @seq.to_slice
+    bytes = @seq.to_slice
     letter = final.unsafe_chr
     parse(bytes)
     case bytes.first?.try(&.unsafe_chr)
@@ -1532,16 +1535,16 @@ class Term
       route(Query::Window, Size.new(param(2, 0, 0), param(1, 0, 0)))
     when 6
       @cell_height = param(1, 0, 0)
-      @cell_width  = param(2, 0, 0)
+      @cell_width = param(2, 0, 0)
       route(Query::Cell, Size.new(@cell_width, @cell_height))
     end
   end
 
   private def key(code : Int32) : Nil
-    mods    = Mods.new((param(1, 0, 1) &- 1).to_u8!)
-    action  = Key::Action.from_value?(param(1, 1, 1)) || Key::Action::Press
+    mods = Mods.new((param(1, 0, 1) &- 1).to_u8!)
+    action = Key::Action.from_value?(param(1, 1, 1)) || Key::Action::Press
     shifted = param(0, 1, 0)
-    base    = param(0, 2, 0)
+    base = param(0, 2, 0)
     text = if @starts.size > 2
              String.build do |io|
                (@starts[2]...@values.size).each do |index|
@@ -1557,9 +1560,9 @@ class Term
   end
 
   private def mouse(release : Bool) : Nil
-    pb  = param(0, 0, 0)
-    x   = param(1, 0, 0)
-    y   = param(2, 0, 0)
+    pb = param(0, 0, 0)
+    x = param(1, 0, 0)
+    y = param(2, 0, 0)
     low = pb & 3
     action, button =
       if pb.bits_set?(256)
@@ -1581,11 +1584,11 @@ class Term
   end
 
   private def resize : Nil
-    rows         = param(1, 0, 0)
-    cols         = param(2, 0, 0)
-    height       = param(3, 0, 0)
-    width        = param(4, 0, 0)
-    @cell_width  = cols > 0 ? width // cols : 0
+    rows = param(1, 0, 0)
+    cols = param(2, 0, 0)
+    height = param(3, 0, 0)
+    width = param(4, 0, 0)
+    @cell_width = cols > 0 ? width // cols : 0
     @cell_height = rows > 0 ? height // rows : 0
     push Resize.new(rows, cols, height, width)
   end
@@ -1618,7 +1621,7 @@ class Term
     return unless body.starts_with?('G')
     control, _, message = body.lchop('G').partition(';')
     meta = fields(control, ',')
-    ack  = Ack.new(meta["i"]?.try(&.to_u32?) || 0_u32, meta["I"]?.try(&.to_u32?) || 0_u32, meta["p"]?.try(&.to_u32?) || 0_u32, message)
+    ack = Ack.new(meta["i"]?.try(&.to_u32?) || 0_u32, meta["I"]?.try(&.to_u32?) || 0_u32, meta["p"]?.try(&.to_u32?) || 0_u32, message)
     route(Query::Graphics, ack, ack.number != 0 ? "I#{ack.number}" : "i#{ack.image}")
   end
 
@@ -1649,9 +1652,9 @@ class Term
   end
 
   private def finish : Nil
-    transfer  = @transfer || return
+    transfer = @transfer || return
     @transfer = nil
-    data      = transfer.data.transform_values(&.to_slice)
+    data = transfer.data.transform_values(&.to_slice)
     if transfer.solicited?
       route(Query::ClipboardRead, Clipboard.new(Status::Done, data))
     else
@@ -1679,7 +1682,7 @@ class Term
     if type = meta["t"]?
       @chain = type.in?("r", "R") ? "r:#{number(meta, "x")}:#{number(meta, "y")}:#{number(meta, "Y")}" : type
     end
-    name  = @chain
+    name = @chain
     chain = @chains.put_if_absent(name) { Chain.new }
     chain.meta.merge!(meta)
     chain.body << payload
@@ -1697,7 +1700,7 @@ class Term
       push Drop.new(kind, col, row, number(meta, "X"), number(meta, "Y"), Operation.new(number(meta, "o") & 3), payload.presence.try(&.split))
     when "r", "R"
       entry = meta.has_key?("y") || meta.has_key?("Y")
-      data  = type == "r" ? DropData.new(Base64.decode(payload), number(meta, "X"), entry: entry) : DropData.new(Bytes.empty, error: payload, entry: entry)
+      data = type == "r" ? DropData.new(Base64.decode(payload), number(meta, "X"), entry: entry) : DropData.new(Bytes.empty, error: payload, entry: entry)
       route(Query::DropData, data, "#{col}:#{row}:#{number(meta, "Y")}")
     when "o"
       push Drag.new(:gesture, col, row, number(meta, "X"), number(meta, "Y"))
@@ -1723,11 +1726,11 @@ class Term
       select
       when raw = @raw.receive?
         break unless raw
-        track(raw, Time.monotonic)
+        track(raw, clock)
       when timeout(patience)
         nil
       end
-      now = Time.monotonic
+      now = clock
       @timers.reject! do |timer|
         next false if timer.at > now
         fire(timer)
@@ -1742,7 +1745,15 @@ class Term
 
   private def patience : Time::Span
     deadline = @timers.min_of?(&.at) || return IDLE
-    {deadline - Time.monotonic, Time::Span.zero}.max
+    {deadline - clock, Time::Span.zero}.max
+  end
+
+  private def clock : Time::Span
+    {% if compare_versions(Crystal::VERSION, "1.19.0") >= 0 %}
+      Time.instant - STARTED
+    {% else %}
+      Time.monotonic
+    {% end %}
   end
 
   private def emit(event : Event) : Nil
@@ -1827,10 +1838,10 @@ class Term
       if held.holding?
         emit KeyGesture.new(:hold_end, key)
       else
-        again      = code == @tap_code && now - @tap_at < @config.multi_tap_window
+        again = code == @tap_code && now - @tap_at < @config.multi_tap_window
         @tap_count = again ? @tap_count + 1 : 1
-        @tap_code  = code
-        @tap_at    = now
+        @tap_code = code
+        @tap_at = now
         emit KeyGesture.new(:tap, key, @tap_count)
       end
       emit TypingMetric.new(code, now - held.at, held.latency, held.overlap)
@@ -1858,8 +1869,8 @@ class Term
   end
 
   private def shortcut(key : Key) : Nil
-    mods     = key.mods & ~LOCKS
-    shifted  = key.shifted if mods.shift?
+    mods = key.mods & ~LOCKS
+    shifted = key.shifted if mods.shift?
     physical = @physical[{key.base || key.code, mods}]?
     symbolic = @symbolic[{shifted || key.code, shifted ? mods & ~Mods::Shift : mods}]?
     emit Binding.new(:shortcut, physical) if physical
@@ -1881,14 +1892,14 @@ class Term
       moved(mouse, now)
     when .drag?
       moved(mouse, now)
-      origin    = @press || mouse
-      kind      = @dragging ? MouseGesture::Kind::DragMove : MouseGesture::Kind::DragStart
+      origin = @press || mouse
+      kind = @dragging ? MouseGesture::Kind::DragMove : MouseGesture::Kind::DragStart
       @dragging = true
       emit MouseGesture.new(kind, mouse, 1, mouse.x - origin.x, mouse.y - origin.y)
     when .press?
       @buttons << mouse.button
       emit MouseGesture.new(:chord, mouse, @buttons.size) if @buttons.size > 1
-      @press    = mouse
+      @press = mouse
       @press_at = now
       @dragging = false
       arm(:long_press, now, @config.long_press_after)
@@ -1897,7 +1908,7 @@ class Term
     when .scroll?
       scrolled(mouse, now)
     end
-    @last    = mouse
+    @last = mouse
     @last_at = now
   end
 
@@ -1913,9 +1924,9 @@ class Term
 
   private def lifted(mouse : Mouse, now : Time::Span) : Nil
     @buttons.delete(mouse.button)
-    press     = @press
-    dragging  = @dragging
-    @press    = nil
+    press = @press
+    dragging = @dragging
+    @press = nil
     @dragging = false
     return unless press
     dx = mouse.x - press.x
@@ -1925,11 +1936,11 @@ class Term
       emit MouseGesture.new(:drag_end, mouse, 1, dx, dy, velocity)
       emit MouseGesture.new(:swipe, mouse, 1, dx, dy, velocity) if velocity >= @config.swipe_velocity
     elsif press.button == mouse.button && near?(dx, dy) && now - @press_at <= @config.click_window
-      click        = @click
-      again        = click && click.button == mouse.button && now - @click_at <= @config.multi_click_window && near?(mouse.x - click.x, mouse.y - click.y)
+      click = @click
+      again = click && click.button == mouse.button && now - @click_at <= @config.multi_click_window && near?(mouse.x - click.x, mouse.y - click.y)
       @click_count = again ? @click_count + 1 : 1
-      @click       = mouse
-      @click_at    = now
+      @click = mouse
+      @click_at = now
       emit MouseGesture.new(:click, mouse, @click_count)
     end
   end
@@ -1937,19 +1948,19 @@ class Term
   private def scrolled(mouse : Mouse, now : Time::Span) : Nil
     flush_scroll if @scroll.try(&.button) != mouse.button
     @scroll_from = now if @scroll_count == 0
-    @scroll      = mouse
+    @scroll = mouse
     @scroll_count += 1
     @scroll_at = now
     arm(:scroll, now, @config.scroll_window)
   end
 
   private def flush_scroll : Nil
-    mouse         = @scroll || return
-    count         = @scroll_count
-    span          = @scroll_at - @scroll_from
-    @scroll       = nil
+    mouse = @scroll || return
+    count = @scroll_count
+    span = @scroll_at - @scroll_from
+    @scroll = nil
     @scroll_count = 0
-    velocity      = span > Time::Span.zero ? count / span.total_seconds : 0.0
+    velocity = span > Time::Span.zero ? count / span.total_seconds : 0.0
     emit MouseGesture.new(:scroll, mouse, count, 0, 0, velocity)
   end
 
