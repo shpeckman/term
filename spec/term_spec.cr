@@ -3,9 +3,99 @@ require "spec"
 require "file_utils"
 require "../src/term"
 
-SETUP    = "\e[?1049h\e[>31u\e[?2048h\e[?1003;1016h\e[?1004h\e[?2033h\e[?2031h\e[?5522h\e[16t"
-TEARDOWN = "\e[?5522l\e[?2031l\e[?2033l\e[?1004l\e[?1003;1016l\e[?2048l\e[<u\e[?1049l"
-DA1      = "\e[?62;c"
+MODES_ON  = "\e[>31u\e[?2048h\e[?1003h\e[?1016h\e[?1004h\e[?2033h\e[?2031h\e[?5522h\e[16t"
+MODES_OFF = "\e[?5522l\e[?2031l\e[?2033l\e[?1004l\e[?1016l\e[?1003l\e[?2048l\e[<u"
+SETUP     = "\e[?1049h" + MODES_ON
+TEARDOWN  = MODES_OFF + "\e[?1049l"
+PROBES    = "\e[?1049h\e[?u\e[c\e[?2048$p\e[c\e[?1003$p\e[c\e[?1016$p\e[c\e[?1004$p\e[c\e[?2033$p\e[c\e[?2031$p\e[c\e[?5522$p\e[c"
+DA1       = "\e[?62;c"
+
+if scenario = ENV["TERM_SPEC_CHILD"]?
+  config = Term::Config.new
+  config.detect = false
+  term = Term.new(config, STDIN, STDOUT)
+  term.accept_drops
+  term.print "READY"
+  sleep 100.milliseconds
+  exit 3 if scenario == "exit"
+  sleep 10.seconds
+  exit 1
+end
+
+private def plain : Term::Config
+  config = Term::Config.new
+  config.detect = false
+  config.signals = false
+  config
+end
+
+private def drain(screen : IO::FileDescriptor, needle : String) : String
+  screen.read_timeout = 20.milliseconds
+  chunk = Bytes.new(65536)
+  seen  = ""
+  150.times do
+    return seen if seen.includes?(needle)
+    begin
+      count = screen.read(chunk)
+      seen += String.new(chunk[0, count]) if count > 0
+    rescue IO::TimeoutError
+    end
+  end
+  raise "expected #{needle.inspect}, got #{seen.inspect}"
+end
+
+private def detect(replies : String, limit : Time::Span = 1.second, & : Term, IO::FileDescriptor, IO::FileDescriptor, String ->) : Nil
+  reader, feed = IO.pipe
+  screen, writer = IO.pipe
+  config = Term::Config.new
+  config.signals = false
+  config.query_timeout = limit
+  opened = Channel(Term).new(1)
+  spawn { opened.send(Term.new(config, reader, writer)) }
+  probes = drain(screen, "\e[?5522$p\e[c")
+  feed << replies
+  feed.flush
+  term = opened.receive
+  begin
+    yield term, feed, screen, probes
+  ensure
+    feed.close
+    term.close
+    writer.close
+    screen.close
+    reader.close
+  end
+end
+
+private def finish(term : Term, feed : IO::FileDescriptor, screen : IO::FileDescriptor) : String
+  term.print "END"
+  output = drain(screen, "END").rchop("END")
+  feed.close
+  term.close
+  output + drain(screen, "\e[?1049l")
+end
+
+private def await(term : Term, type : T.class) : T forall T
+  loop do
+    select
+    when event = term.events.receive?
+      raise "events closed" unless event
+      return event if event.is_a?(T)
+    when timeout(3.seconds)
+      raise "no #{T} event"
+    end
+  end
+end
+
+private def child(scenario : String, & : Process ->) : {String, Process::Status}
+  process = Process.new(Process.executable_path.not_nil!, env: {"TERM_SPEC_CHILD" => scenario}, input: :pipe, output: :pipe, error: :close)
+  output  = process.output.as(IO::FileDescriptor)
+  seen    = drain(output, "READY")
+  yield process
+  output.read_timeout = 5.seconds
+  seen += output.gets_to_end
+  {seen, process.wait}
+end
 
 private def osc(body : String) : String
   "\e]#{body}\e\\"
@@ -36,16 +126,16 @@ private class Rig
   getter seen = ""
   getter last = ""
   @buffer = ""
-  @feed : IO::FileDescriptor
+  @feed   : IO::FileDescriptor
   @screen : IO::FileDescriptor
   @reader : IO::FileDescriptor
   @writer : IO::FileDescriptor
 
-  def initialize(config : Term::Config = Term::Config.new)
+  def initialize(config : Term::Config = plain)
     reader, @feed = IO.pipe
     @screen, writer = IO.pipe
     @screen.read_timeout = 20.milliseconds
-    @term = Term.new(config, reader, writer)
+    @term   = Term.new(config, reader, writer)
     @reader = reader
     @writer = writer
     expect(/\e\[16t/)
@@ -60,8 +150,8 @@ private class Rig
     chunk = Bytes.new(65536)
     attempts.times do
       if match = pattern.match(@buffer)
-        @seen = match.pre_match + match[0]
-        @last = match[0]
+        @seen   = match.pre_match + match[0]
+        @last   = match[0]
         @buffer = match.post_match
         return match
       end
@@ -133,7 +223,7 @@ private class Rig
   end
 end
 
-private def rig(config : Term::Config = Term::Config.new, & : Rig ->) : Nil
+private def rig(config : Term::Config = plain, & : Rig ->) : Nil
   rig = Rig.new(config)
   begin
     yield rig
@@ -163,7 +253,7 @@ describe Term do
     it "enables every mode on open and undoes them in reverse on close" do
       reader, feed = IO.pipe
       screen, writer = IO.pipe
-      term = Term.new(Term::Config.new, reader, writer)
+      term = Term.new(plain, reader, writer)
       term.closed?.should be_false
       feed.close
       term.close
@@ -174,7 +264,7 @@ describe Term do
     end
 
     it "stays on the main screen when the alternate screen is disabled" do
-      config = Term::Config.new
+      config = plain
       config.alternate_screen = false
       reader, feed = IO.pipe
       screen, writer = IO.pipe
@@ -192,7 +282,7 @@ describe Term do
       reader, feed = IO.pipe
       screen, writer = IO.pipe
       captured = nil
-      Term.open(Term::Config.new, reader, writer) do |term|
+      Term.open(plain, reader, writer) do |term|
         captured = term
         feed.close
       end
@@ -307,7 +397,7 @@ describe Term do
       rig do |rig|
         rig.feed tap('a') + tap('a') + tap('b')
         events = rig.upto { |event| marker?(event, 'b') }
-        taps = events.compact_map(&.as?(Term::KeyGesture)).select(&.kind.tap?)
+        taps   = events.compact_map(&.as?(Term::KeyGesture)).select(&.kind.tap?)
         taps.map(&.count).should eq([1, 2, 1])
         taps.map(&.key.code).should eq([97, 97, 98])
         metrics = events.compact_map(&.as?(Term::TypingMetric))
@@ -320,7 +410,7 @@ describe Term do
     it "counts rollover overlap from the pressed set" do
       rig do |rig|
         rig.feed press('a') + press('b') + release('a') + release('b')
-        events = rig.upto { |event| marker?(event, 'b') }
+        events  = rig.upto { |event| marker?(event, 'b') }
         metrics = events.compact_map(&.as?(Term::TypingMetric))
         metrics.map(&.code).should eq([97, 98])
         metrics.map(&.overlap).should eq([0, 1])
@@ -346,7 +436,7 @@ describe Term do
     end
 
     it "starts a hold from the timer when no repeat arrives" do
-      config = Term::Config.new
+      config = plain
       config.hold_after = 20.milliseconds
       rig(config) do |rig|
         rig.feed press('a')
@@ -357,7 +447,7 @@ describe Term do
     end
 
     it "fires a chord once per completion and re-arms after a release" do
-      config = Term::Config.new
+      config = plain
       config.chord("ab", 'a', 'b')
       rig(config) do |rig|
         rig.feed press('a') + press('b') + press('c') + "\e[98;1:2u" + release('b') + press('b') + tap('q')
@@ -367,7 +457,7 @@ describe Term do
     end
 
     it "walks a key sequence and ignores modifiers and repeats in between" do
-      config = Term::Config.new
+      config = plain
       config.sequence("leader", ' ', 'f', 'g')
       rig(config) do |rig|
         rig.feed "#{tap(' ')}\e[57441;2u\e[57441;1:3u#{press('f')}\e[102;1:2u#{release('f')}#{tap('g')}"
@@ -377,7 +467,7 @@ describe Term do
     end
 
     it "resets a key sequence on a wrong key and on the timeout" do
-      config = Term::Config.new
+      config = plain
       config.sequence_timeout = 20.milliseconds
       config.sequence("gg", 'g', 'g')
       rig(config) do |rig|
@@ -395,7 +485,7 @@ describe Term do
     end
 
     it "matches symbolic shortcuts, ignoring lock modifiers and consuming shift" do
-      config = Term::Config.new
+      config = plain
       config.shortcut("save", 's', Term::Mods::Ctrl)
       config.shortcut("plus", '+', Term::Mods::Ctrl)
       rig(config) do |rig|
@@ -406,7 +496,7 @@ describe Term do
     end
 
     it "matches physical shortcuts on the base layout key" do
-      config = Term::Config.new
+      config = plain
       config.shortcut("quit", 'q', Term::Mods::Ctrl, physical: true)
       rig(config) do |rig|
         rig.feed "\e[97::113;5u\e[113;5u\e[97;5u#{tap('z')}"
@@ -419,7 +509,7 @@ describe Term do
       rig do |rig|
         rig.feed "\e[57441;2u\e[57441;1:3u\e[57442;5u#{press('a')}\e[57442;1:3u#{release('a')}"
         events = rig.upto { |event| marker?(event, 'a') }
-        taps = events.compact_map(&.as?(Term::KeyGesture)).select(&.kind.modifier_tap?)
+        taps   = events.compact_map(&.as?(Term::KeyGesture)).select(&.kind.modifier_tap?)
         taps.map(&.key.code).should eq([57441])
       end
     end
@@ -444,16 +534,16 @@ describe Term do
       rig do |rig|
         rig.feed "\e[<1;1;1M\e[<2;1;1m\e[<34;2;2M\e[<35;3;3M\e[<65;3;3M\e[<67;3;3M\e[<129;3;3M\e[<131;3;3m\e[<8;3;3M\e[<256;0;0M"
         expected = [
-          {Term::Mouse::Action::Press, Term::Mouse::Button::Middle},
+          {Term::Mouse::Action::Press,   Term::Mouse::Button::Middle},
           {Term::Mouse::Action::Release, Term::Mouse::Button::Right},
-          {Term::Mouse::Action::Drag, Term::Mouse::Button::Right},
-          {Term::Mouse::Action::Hover, Term::Mouse::Button::None},
-          {Term::Mouse::Action::Scroll, Term::Mouse::Button::WheelDown},
-          {Term::Mouse::Action::Scroll, Term::Mouse::Button::WheelRight},
-          {Term::Mouse::Action::Press, Term::Mouse::Button::Aux9},
+          {Term::Mouse::Action::Drag,    Term::Mouse::Button::Right},
+          {Term::Mouse::Action::Hover,   Term::Mouse::Button::None},
+          {Term::Mouse::Action::Scroll,  Term::Mouse::Button::WheelDown},
+          {Term::Mouse::Action::Scroll,  Term::Mouse::Button::WheelRight},
+          {Term::Mouse::Action::Press,   Term::Mouse::Button::Aux9},
           {Term::Mouse::Action::Release, Term::Mouse::Button::Aux11},
-          {Term::Mouse::Action::Press, Term::Mouse::Button::Left},
-          {Term::Mouse::Action::Leave, Term::Mouse::Button::None},
+          {Term::Mouse::Action::Press,   Term::Mouse::Button::Left},
+          {Term::Mouse::Action::Leave,   Term::Mouse::Button::None},
         ]
         expected.each do |action, button|
           mouse = rig.event(Term::Mouse)
@@ -502,7 +592,7 @@ describe Term do
       rig do |rig|
         rig.feed "\e[<0;10;10M\e[<32;30;10M\e[<32;50;14M\e[<0;50;14m#{tap('q')}"
         events = rig.upto { |event| marker?(event, 'q') }
-        drags = events.compact_map(&.as?(Term::MouseGesture)).select { |gesture| gesture.kind.drag_start? || gesture.kind.drag_move? || gesture.kind.drag_end? }
+        drags  = events.compact_map(&.as?(Term::MouseGesture)).select { |gesture| gesture.kind.drag_start? || gesture.kind.drag_move? || gesture.kind.drag_end? }
         drags.map(&.kind).should eq([Term::MouseGesture::Kind::DragStart, Term::MouseGesture::Kind::DragMove, Term::MouseGesture::Kind::DragEnd])
         drags.map(&.dx).should eq([20, 40, 40])
         drags.last.dy.should eq(4)
@@ -554,7 +644,7 @@ describe Term do
     end
 
     it "reports a long press when no release follows" do
-      config = Term::Config.new
+      config = plain
       config.long_press_after = 20.milliseconds
       rig(config) do |rig|
         rig.feed "\e[<0;5;5M"
@@ -563,7 +653,7 @@ describe Term do
     end
 
     it "reports hover dwell and its end when motion resumes" do
-      config = Term::Config.new
+      config = plain
       config.hover_dwell_after = 20.milliseconds
       rig(config) do |rig|
         rig.feed "\e[<35;5;5M"
@@ -732,7 +822,7 @@ describe Term do
     end
 
     it "sends the password and name when an app name is configured, and the location" do
-      config = Term::Config.new
+      config = plain
       config.app_name = "demo"
       rig(config) do |rig|
         rig.ask(/\e\]5522;type=wdata\e\\/, osc("5522;type=write:status=DONE")) { rig.term.copy("x", primary: true) }
@@ -781,7 +871,7 @@ describe Term do
 
     it "reads from the primary selection" do
       rig do |rig|
-        reply = osc("5522;type=read:status=ENOSYS:id=term")
+        reply     = osc("5522;type=read:status=ENOSYS:id=term")
         clipboard = rig.ask(/\e\]5522;type=read:id=term:loc=primary;/, reply) { rig.term.clipboard_read("text/plain", primary: true) }.not_nil!
         clipboard.status.should eq(Term::Status::ENOSYS)
         clipboard.done?.should be_false
@@ -810,7 +900,7 @@ describe Term do
         reply = osc("5522;type=read:status=OK:id=term") +
                 osc("5522;type=read:status=DATA:id=term:mime=#{b64("text/html")};#{b64("<b>Bold text</b>")}") +
                 osc("5522;type=read:status=DONE:id=term")
-        request = /\e\]5522;type=read:id=term:loc=primary:pw=c2VjcmV0:name=UGFzdGUgZXZlbnQ=;#{Regex.escape(b64("text/html"))}\e\\/
+        request   = /\e\]5522;type=read:id=term:loc=primary:pw=c2VjcmV0:name=UGFzdGUgZXZlbnQ=;#{Regex.escape(b64("text/html"))}\e\\/
         clipboard = rig.ask(request, reply) { rig.term.clipboard_read(paste, "text/html") }.not_nil!
         String.new(clipboard.data["text/html"]).should eq("<b>Bold text</b>")
       end
@@ -868,7 +958,7 @@ describe Term do
     it "compresses direct data and requests an id through an image number" do
       rig do |rig|
         data = Bytes.new(500, 7_u8)
-        ack = rig.ask(/\e_Ga=t,I=13[^\e]*\e\\/, apc("i=99,I=13;OK")) { rig.term.image(Term::Pixels.png(data, compress: true), number: 13) }.not_nil!
+        ack  = rig.ask(/\e_Ga=t,I=13[^\e]*\e\\/, apc("i=99,I=13;OK")) { rig.term.image(Term::Pixels.png(data, compress: true), number: 13) }.not_nil!
         {ack.image, ack.number}.should eq({99, 13})
         match = rig.last.match!(/\e_G([^;]*);([^\e]*)\e\\/)
         match[1].should eq("a=t,I=13,f=100,t=d,S=500,o=z")
@@ -1019,7 +1109,7 @@ describe Term do
     it "sends every option, then body, buttons and icon data with the done flag last" do
       rig do |rig|
         icon = Bytes.new(3000) { |index| (index % 200).to_u8 }
-        id = rig.term.notify("Title", "Body", id: "n1", report: true, closes: true, app: "demo", types: ["im", "email"], icons: ["info", "demo"], icon: icon, icon_key: "k1", buttons: ["Yes", "No"], sound: "silent", urgency: Term::Urgency::Critical, expires: 5.seconds, occasion: Term::Occasion::Invisible)
+        id   = rig.term.notify("Title", "Body", id: "n1", report: true, closes: true, app: "demo", types: ["im", "email"], icons: ["info", "demo"], icon: icon, icon_key: "k1", buttons: ["Yes", "No"], sound: "silent", urgency: Term::Urgency::Critical, expires: 5.seconds, occasion: Term::Occasion::Invisible)
         id.should eq("n1")
         rig.expect(/\e\]99;i=n1:p=icon:e=1:g=k1;[^\e]*\e\\/)
         codes = rig.seen.scan(/\e\]99;([^;]*);([^\e]*)\e\\/).map { |match| {match[1], match[2]} }
@@ -1111,7 +1201,7 @@ describe Term do
     it "starts and stops accepting drops, and stops on close" do
       reader, feed = IO.pipe
       screen, writer = IO.pipe
-      term = Term.new(Term::Config.new, reader, writer)
+      term = Term.new(plain, reader, writer)
       term.accept_drops
       term.accept_drops("text/plain", "application/x-private")
       term.stop_drops
@@ -1140,7 +1230,7 @@ describe Term do
     end
 
     it "adds the multiplexer id to every code" do
-      config = Term::Config.new
+      config = plain
       config.dnd_id = 7
       rig(config) do |rig|
         rig.term.accept_drops
@@ -1189,8 +1279,8 @@ describe Term do
     it "reads dropped data sent in unpadded chunks and sees the remote flag" do
       rig do |rig|
         encoded = b64("file:///a\r\n#comment\r\nfile:///d/\r\n").rstrip('=')
-        reply = osc("72;t=r:x=1:X=1:m=1;#{encoded[0, 10]}") + osc("72;t=r:x=1:m=1;#{encoded[10..]}") + osc("72;t=r:x=1;")
-        data = rig.ask(/\e\]72;t=r:x=1\e\\/, reply) { rig.term.drop_data(1) }.not_nil!
+        reply   = osc("72;t=r:x=1:X=1:m=1;#{encoded[0, 10]}") + osc("72;t=r:x=1:m=1;#{encoded[10..]}") + osc("72;t=r:x=1;")
+        data    = rig.ask(/\e\]72;t=r:x=1\e\\/, reply) { rig.term.drop_data(1) }.not_nil!
         data.ok?.should be_true
         data.remote?.should be_true
         data.symlink?.should be_false
@@ -1354,11 +1444,11 @@ describe Term do
           rig.expect("\e]72;t=k:x=1:Y=3:y=1:m=0\e\\")
           heads = rig.seen.scan(/\e\]72;([^;\e]*);([^\e]*)\e\\/).map { |match| {match[1], Base64.decode_string(match[2])} }
           heads.should eq([
-            {"t=k:x=1:X=2:m=1", "a.txt\0link\0sub"},
-            {"t=k:x=1:Y=2:y=1:m=1", "hello"},
+            {"t=k:x=1:X=2:m=1",         "a.txt\0link\0sub"},
+            {"t=k:x=1:Y=2:y=1:m=1",     "hello"},
             {"t=k:x=1:X=1:Y=2:y=2:m=1", "a.txt"},
             {"t=k:x=1:X=3:Y=2:y=3:m=1", "b.txt"},
-            {"t=k:x=1:Y=3:y=1:m=1", "deep"},
+            {"t=k:x=1:Y=3:y=1:m=1",     "deep"},
           ])
           rig.seen.scan(/:m=0\e\\/).size.should eq(5)
         end
@@ -1384,7 +1474,7 @@ describe Term do
 
   describe "robustness" do
     it "returns nil when a query times out and still answers the next one" do
-      config = Term::Config.new
+      config = plain
       config.query_timeout = 40.milliseconds
       rig(config) do |rig|
         rig.term.pointer.should be_nil
@@ -1407,7 +1497,7 @@ describe Term do
 
     it "ignores plain bytes, unknown sequences and unsolicited replies" do
       rig do |rig|
-        rig.feed "hello\r\n\exyz\e[5n\e[>1;2;3c\e[?1;2c\e]22;pointer\e\\\e]21;foreground=red\e\\\e_Gi=1;OK\e\\\e]99;i=q:p=alive;a\e\\\e]72;t=r:x=1;AAAA\e\\\e]72;t=q;\e\\\eP1$r0m\e\\\e^private\e\\\e]7;file:///x\a\e[4;1;2t" + press('a')
+        rig.feed "\e[5n\e[>1;2;3c\e[?1;2c\e]22;pointer\e\\\e]21;foreground=red\e\\\e_Gi=1;OK\e\\\e]99;i=q:p=alive;a\e\\\e]72;t=r:x=1;AAAA\e\\\e]72;t=q;\e\\\eP1$r0m\e\\\e^private\e\\\e]7;file:///x\a\e[4;1;2t" + press('a')
         key = rig.event(Term::Key)
         key.code.should eq(97)
       end
@@ -1434,7 +1524,7 @@ describe Term do
     it "ignores invalid base64 in drag and drop data and keeps running" do
       rig do |rig|
         config_limit = 60.milliseconds
-        result = Channel(Term::DropData?).new(1)
+        result       = Channel(Term::DropData?).new(1)
         spawn { result.send(rig.term.drop_data(1, limit: config_limit)) }
         rig.expect("\e]72;t=r:x=1\e\\")
         rig.feed osc("72;t=r:x=1;@@@@") + press('a')
@@ -1459,6 +1549,185 @@ describe Term do
         codes.size.should eq(160)
         codes.sum(&.[0].bytesize).should eq(rig.seen.rchop("END").bytesize)
       end
+    end
+  end
+
+  describe "support detection" do
+    it "probes every feature and enables all of them when the terminal answers" do
+      replies = "\e[?0u" + DA1 + {2048, 1003, 1016, 1004, 2033, 2031, 5522}.join { |mode| "\e[?#{mode};2$y" + DA1 }
+      detect(replies) do |term, feed, screen, probes|
+        probes.should eq(PROBES)
+        term.features.should eq(Term::Feature::All)
+        finish(term, feed, screen).should eq(MODES_ON + TEARDOWN)
+      end
+    end
+
+    it "falls back to cell mouse reports and bracketed paste when nothing is supported" do
+      detect(DA1 * 8) do |term, feed, screen|
+        term.features.should eq(Term::Feature::None)
+        finish(term, feed, screen).should eq("\e[?1006h\e[?2004h\e[16t\e[?2004l\e[?1006l\e[?1049l")
+      end
+    end
+
+    it "enables only what is supported, treating states 0 and 4 as unsupported" do
+      replies = "\e[?1u" + DA1 + DA1 + DA1 + "\e[?1016;1$y" + DA1 + DA1 + DA1 + "\e[?2031;4$y" + DA1 + "\e[?5522;0$y" + DA1
+      detect(replies) do |term, feed, screen|
+        term.features.should eq(Term::Feature::Keyboard | Term::Feature::Pixels)
+        term.features.keyboard?.should be_true
+        term.features.paste?.should be_false
+        finish(term, feed, screen).should eq("\e[>31u\e[?1016h\e[?2004h\e[16t\e[?2004l\e[?1016l\e[<u\e[?1049l")
+      end
+    end
+
+    it "assumes nothing is supported when the terminal never answers" do
+      detect("", 60.milliseconds) do |term|
+        term.features.should eq(Term::Feature::None)
+      end
+    end
+
+    it "reads SGR mouse reports as one-based cells without pixel mode" do
+      detect(DA1 * 8) do |term, feed|
+        feed << "\e[<0;5;3M"
+        feed.flush
+        mouse = await(term, Term::Mouse)
+        {mouse.col, mouse.row, mouse.x, mouse.y}.should eq({4, 2, 4, 2})
+        feed << "\e[6;20;10t\e[<0;5;3M"
+        feed.flush
+        mouse = await(term, Term::Mouse)
+        {mouse.col, mouse.row, mouse.x, mouse.y}.should eq({4, 2, 40, 40})
+      end
+    end
+
+    it "synthesizes a release for legacy escape keys without the keyboard protocol" do
+      detect(DA1 * 8) do |term, feed|
+        feed << "\e[A\e[3;5~"
+        feed.flush
+        keys = Array.new(4) { await(term, Term::Key) }
+        keys.map(&.named).should eq([Term::Named::Up, Term::Named::Up, Term::Named::Delete, Term::Named::Delete])
+        keys.map(&.action).should eq([Term::Key::Action::Press, Term::Key::Action::Release, Term::Key::Action::Press, Term::Key::Action::Release])
+        keys[2].ctrl?.should be_true
+      end
+    end
+
+    it "skips the probes and enables everything when detection is off" do
+      rig do |rig|
+        rig.term.features.should eq(Term::Feature::All)
+      end
+    end
+  end
+
+  describe "legacy input" do
+    it "turns typed bytes into a press and release with text" do
+      rig do |rig|
+        rig.feed "aA1" + tap('q')
+        events = rig.upto { |event| marker?(event, 'q') }
+        keys   = events.compact_map(&.as?(Term::Key)).first(6)
+        keys.map(&.code).should eq([97, 97, 97, 97, 49, 49])
+        keys.map(&.action.press?).should eq([true, false, true, false, true, false])
+        keys[0].text.should eq("a")
+        keys[1].text.should be_nil
+        keys[2].mods.should eq(Term::Mods::Shift)
+        keys[2].shifted.should eq(65)
+        keys[2].text.should eq("A")
+        events.compact_map(&.as?(Term::TextInput)).map(&.text).should eq(["a", "A", "1"])
+        events.compact_map(&.as?(Term::KeyGesture)).select(&.kind.tap?).first(2).map(&.count).should eq([1, 2])
+      end
+    end
+
+    it "decodes multi-byte UTF-8, even split across reads" do
+      rig do |rig|
+        bytes = "é€😀".to_slice
+        rig.feed String.new(bytes[0, 3])
+        sleep 5.milliseconds
+        rig.feed String.new(bytes[3..]) + tap('q')
+        events = rig.upto { |event| marker?(event, 'q') }
+        events.compact_map(&.as?(Term::TextInput)).map(&.text).should eq(["é", "€", "😀"])
+        events.compact_map(&.as?(Term::Key)).select(&.press?).first(3).map(&.code).should eq(['é'.ord, '€'.ord, '😀'.ord])
+      end
+    end
+
+    it "maps control bytes to named keys and ctrl combinations" do
+      config = plain
+      config.shortcut("save", 's', Term::Mods::Ctrl)
+      rig(config) do |rig|
+        rig.feed "\r\t\u007f\u0001\u0000\u001d\u0013" + tap('q')
+        events = rig.upto { |event| marker?(event, 'q') }
+        keys   = events.compact_map(&.as?(Term::Key)).select(&.press?).first(7)
+        keys.first(3).map(&.named).should eq([Term::Named::Enter, Term::Named::Tab, Term::Named::Backspace])
+        keys[3..].map(&.code).should eq([97, 32, 93, 115])
+        keys[3..].all?(&.ctrl?).should be_true
+        keys.all?(&.text.nil?).should be_true
+        events.compact_map(&.as?(Term::TextInput)).should be_empty
+        bindings(events, :shortcut).should eq(["save"])
+      end
+    end
+
+    it "reads an escape prefix as alt and SS3 as function keys" do
+      rig do |rig|
+        rig.feed "\ea\eOP\eOA\eOR" + tap('q')
+        events = rig.upto { |event| marker?(event, 'q') }
+        keys   = events.compact_map(&.as?(Term::Key)).select(&.press?).first(4)
+        {keys[0].code, keys[0].mods, keys[0].text}.should eq({97, Term::Mods::Alt, nil})
+        keys[1..].map(&.named).should eq([Term::Named::F1, Term::Named::Up, Term::Named::F3])
+      end
+    end
+
+    it "reports a lone escape once no sequence follows" do
+      rig do |rig|
+        rig.feed "\e"
+        key = rig.event(Term::Key)
+        {key.named, key.press?}.should eq({Term::Named::Escape, true})
+        rig.event(Term::Key).release?.should be_true
+        rig.feed "\eO"
+        key = rig.event(Term::Key)
+        {key.code, key.mods}.should eq({111, Term::Mods::Alt | Term::Mods::Shift})
+      end
+    end
+
+    it "delivers a bracketed paste as one event without parsing its contents" do
+      rig do |rig|
+        text = "hello\r\nwörld \e[31m\e]0;x\a ~"
+        rig.feed "\e[200~#{text}\e[201~" + tap('q')
+        events = rig.upto { |event| marker?(event, 'q') }
+        events.compact_map(&.as?(Term::Key)).map(&.code).uniq.should eq([113])
+        paste = events.compact_map(&.as?(Term::Paste)).first
+        paste.text.should eq(text)
+        paste.mimes.should eq(["text/plain"])
+        paste.password.should be_nil
+        clipboard = rig.term.clipboard_read(paste, "text/plain").not_nil!
+        clipboard.done?.should be_true
+        clipboard.text.should eq(text)
+      end
+    end
+  end
+
+  describe "cleanup" do
+    it "restores every open terminal at once and does not repeat it on close" do
+      reader, feed = IO.pipe
+      screen, writer = IO.pipe
+      term = Term.new(plain, reader, writer)
+      term.accept_drops
+      term.print "X"
+      drain(screen, "X").should eq(SETUP + "\e]72;t=a\e\\X")
+      Term.restore
+      drain(screen, "\e[?1049l").should eq("\e]72;t=A\e\\" + TEARDOWN)
+      Term.restore
+      feed.close
+      term.close
+      writer.close
+      screen.gets_to_end.should eq("")
+    end
+
+    it "restores the terminal when the process is terminated by a signal" do
+      output, status = child("signal", &.signal(Signal::TERM))
+      output.should eq(SETUP + "\e]72;t=a\e\\READY\e]72;t=A\e\\" + TEARDOWN)
+      status.exit_code.should eq(128 + Signal::TERM.value)
+    end
+
+    it "restores the terminal when the process exits without closing" do
+      output, status = child("exit") { }
+      output.should eq(SETUP + "\e]72;t=a\e\\READY\e]72;t=A\e\\" + TEARDOWN)
+      status.exit_code.should eq(3)
     end
   end
 end
