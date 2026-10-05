@@ -1,19 +1,28 @@
 # src/term.cr
 require "base64"
 require "uuid"
+require "compress/zlib"
+require "openssl/hmac"
 
 class Term
-  ST         = "\e\\"
-  ID         = "term"
-  PASTE_NAME = "UGFzdGUgZXZlbnQ="
-  CHUNK      = 4095
-  MISSING    = Int32::MIN
-  CSI_LIMIT  = 256
-  OSC_LIMIT  = 1 << 24
-  POLL       = 100.milliseconds
-  IDLE       = 1.hour
-  SCREEN     = {"\e[?1049h", "\e[?1049l"}
-  MODES      = [
+  ST          = "\e\\"
+  ID          = "term"
+  PASTE_NAME  = "UGFzdGUgZXZlbnQ="
+  MACHINE_KEY = "tty-dnd-protocol-machine-id"
+  ATTRIBUTES  = "\e[c"
+  PLACEHOLDER = '\u{10EEEE}'
+  SEPARATOR   = ' '
+  DND         =   72
+  CHUNK       = 4095
+  WIRE_CHUNK  = 4096
+  TEXT_CHUNK  = 2048
+  MISSING     = Int32::MIN
+  CSI_LIMIT   = 256
+  TEXT_LIMIT  = 1 << 28
+  POLL        = 100.milliseconds
+  IDLE        = 1.hour
+  SCREEN      = {"\e[?1049h", "\e[?1049l"}
+  MODES       = [
     {"\e[>31u",        "\e[<u"},
     {"\e[?2048h",      "\e[?2048l"},
     {"\e[?1003;1016h", "\e[?1003;1016l"},
@@ -21,6 +30,34 @@ class Term
     {"\e[?2033h",      "\e[?2033l"},
     {"\e[?2031h",      "\e[?2031l"},
     {"\e[?5522h",      "\e[?5522l"},
+    {"\e[16t",         ""},
+  ]
+  DIACRITICS = [
+    0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346, 0x034a, 0x034b, 0x034c,
+    0x0350, 0x0351, 0x0352, 0x0357, 0x035b, 0x0363, 0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369,
+    0x036a, 0x036b, 0x036c, 0x036d, 0x036e, 0x036f, 0x0483, 0x0484, 0x0485, 0x0486, 0x0487, 0x0592,
+    0x0593, 0x0594, 0x0595, 0x0597, 0x0598, 0x0599, 0x059c, 0x059d, 0x059e, 0x059f, 0x05a0, 0x05a1,
+    0x05a8, 0x05a9, 0x05ab, 0x05ac, 0x05af, 0x05c4, 0x0610, 0x0611, 0x0612, 0x0613, 0x0614, 0x0615,
+    0x0616, 0x0617, 0x0657, 0x0658, 0x0659, 0x065a, 0x065b, 0x065d, 0x065e, 0x06d6, 0x06d7, 0x06d8,
+    0x06d9, 0x06da, 0x06db, 0x06dc, 0x06df, 0x06e0, 0x06e1, 0x06e2, 0x06e4, 0x06e7, 0x06e8, 0x06eb,
+    0x06ec, 0x0730, 0x0732, 0x0733, 0x0735, 0x0736, 0x073a, 0x073d, 0x073f, 0x0740, 0x0741, 0x0743,
+    0x0745, 0x0747, 0x0749, 0x074a, 0x07eb, 0x07ec, 0x07ed, 0x07ee, 0x07ef, 0x07f0, 0x07f1, 0x07f3,
+    0x0816, 0x0817, 0x0818, 0x0819, 0x081b, 0x081c, 0x081d, 0x081e, 0x081f, 0x0820, 0x0821, 0x0822,
+    0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082a, 0x082b, 0x082c, 0x082d, 0x0951, 0x0953, 0x0954,
+    0x0f82, 0x0f83, 0x0f86, 0x0f87, 0x135d, 0x135e, 0x135f, 0x17dd, 0x193a, 0x1a17, 0x1a75, 0x1a76,
+    0x1a77, 0x1a78, 0x1a79, 0x1a7a, 0x1a7b, 0x1a7c, 0x1b6b, 0x1b6d, 0x1b6e, 0x1b6f, 0x1b70, 0x1b71,
+    0x1b72, 0x1b73, 0x1cd0, 0x1cd1, 0x1cd2, 0x1cda, 0x1cdb, 0x1ce0, 0x1dc0, 0x1dc1, 0x1dc3, 0x1dc4,
+    0x1dc5, 0x1dc6, 0x1dc7, 0x1dc8, 0x1dc9, 0x1dcb, 0x1dcc, 0x1dd1, 0x1dd2, 0x1dd3, 0x1dd4, 0x1dd5,
+    0x1dd6, 0x1dd7, 0x1dd8, 0x1dd9, 0x1dda, 0x1ddb, 0x1ddc, 0x1ddd, 0x1dde, 0x1ddf, 0x1de0, 0x1de1,
+    0x1de2, 0x1de3, 0x1de4, 0x1de5, 0x1de6, 0x1dfe, 0x20d0, 0x20d1, 0x20d4, 0x20d5, 0x20d6, 0x20d7,
+    0x20db, 0x20dc, 0x20e1, 0x20e7, 0x20e9, 0x20f0, 0x2cef, 0x2cf0, 0x2cf1, 0x2de0, 0x2de1, 0x2de2,
+    0x2de3, 0x2de4, 0x2de5, 0x2de6, 0x2de7, 0x2de8, 0x2de9, 0x2dea, 0x2deb, 0x2dec, 0x2ded, 0x2dee,
+    0x2def, 0x2df0, 0x2df1, 0x2df2, 0x2df3, 0x2df4, 0x2df5, 0x2df6, 0x2df7, 0x2df8, 0x2df9, 0x2dfa,
+    0x2dfb, 0x2dfc, 0x2dfd, 0x2dfe, 0x2dff, 0xa66f, 0xa67c, 0xa67d, 0xa6f0, 0xa6f1, 0xa8e0, 0xa8e1,
+    0xa8e2, 0xa8e3, 0xa8e4, 0xa8e5, 0xa8e6, 0xa8e7, 0xa8e8, 0xa8e9, 0xa8ea, 0xa8eb, 0xa8ec, 0xa8ed,
+    0xa8ee, 0xa8ef, 0xa8f0, 0xa8f1, 0xaab0, 0xaab2, 0xaab3, 0xaab7, 0xaab8, 0xaabe, 0xaabf, 0xaac1,
+    0xfe20, 0xfe21, 0xfe22, 0xfe23, 0xfe24, 0xfe25, 0xfe26, 0x10a0f, 0x10a38, 0x1d185, 0x1d186, 0x1d187,
+    0x1d188, 0x1d189, 0x1d1aa, 0x1d1ab, 0x1d1ac, 0x1d1ad, 0x1d242, 0x1d243, 0x1d244,
   ]
 
   @[Flags]
@@ -211,14 +248,23 @@ class Term
     ClipboardRead
     ClipboardWrite
     Mode
+    Attributes
+    Window
+    Cell
+    Graphics
+    NotifySupport
+    NotifyAlive
+    DndSupport
+    DropData
+    DragStart
   end
 
   enum State
     Ground
     Escape
     Csi
-    Osc
-    OscEscape
+    Text
+    TextEscape
   end
 
   enum Direction
@@ -227,6 +273,85 @@ class Term
     Up
     Down
   end
+
+  enum Format
+    Text =   0
+    RGB  =  24
+    RGBA =  32
+    PNG  = 100
+  end
+
+  enum Medium
+    Direct
+    File
+    TempFile
+    SharedMemory
+  end
+
+  enum Quiet
+    None
+    Ok
+    All
+  end
+
+  enum Delete
+    Visible
+    Id
+    Number
+    Cursor
+    Frames
+    Cell
+    CellZ
+    Range
+    Column
+    Row
+    Z
+  end
+
+  enum Playback
+    Stop    = 1
+    Loading
+    Loop
+  end
+
+  enum Urgency
+    Low
+    Normal
+    Critical
+  end
+
+  enum Occasion
+    Always
+    Unfocused
+    Invisible
+  end
+
+  @[Flags]
+  enum Operation
+    Copy
+    Move
+  end
+
+  MEDIA = {
+    Medium::Direct       => 'd',
+    Medium::File         => 'f',
+    Medium::TempFile     => 't',
+    Medium::SharedMemory => 's',
+  }
+
+  DELETES = {
+    Delete::Visible => 'a',
+    Delete::Id      => 'i',
+    Delete::Number  => 'n',
+    Delete::Cursor  => 'c',
+    Delete::Frames  => 'f',
+    Delete::Cell    => 'p',
+    Delete::CellZ   => 'q',
+    Delete::Range   => 'r',
+    Delete::Column  => 'x',
+    Delete::Row     => 'y',
+    Delete::Z       => 'z',
+  }
 
   record Key, code : Int32, action : Action, mods : Mods, shifted : Int32?, base : Int32?, text : String? do
     enum Action
@@ -290,6 +415,37 @@ class Term
   record Paste, mimes : Array(String), primary : Bool, password : String?
   record TextInput, text : String
   record TypingMetric, code : Int32, dwell : Time::Span, latency : Time::Span, overlap : Int32
+  record Size, width : Int32, height : Int32
+
+  record Notification, kind : Kind, id : String, button : Int32 = 0, untracked : Bool = false do
+    enum Kind
+      Activated
+      Button
+      Closed
+    end
+  end
+
+  record Drop, kind : Kind, col : Int32, row : Int32, x : Int32, y : Int32, operations : Operation, mimes : Array(String)? do
+    enum Kind
+      Move
+      Leave
+      Land
+    end
+  end
+
+  record Drag, kind : Kind, col : Int32 = 0, row : Int32 = 0, x : Int32 = 0, y : Int32 = 0, index : Int32 = 0, operation : Operation = Operation::None, canceled : Bool = false, error : String? = nil do
+    enum Kind
+      Gesture
+      Started
+      Accepted
+      Action
+      Dropped
+      Finished
+      DataRequest
+      FileRequest
+      Error
+    end
+  end
 
   record KeyGesture, kind : Kind, key : Key, count : Int32 = 1 do
     enum Kind
@@ -389,6 +545,72 @@ class Term
     end
   end
 
+  record Pixels, data : Bytes, format : Format = Format::RGBA, width : Int32 = 0, height : Int32 = 0, medium : Medium = Medium::Direct, compress : Bool = false, size : Int32 = 0, offset : Int32 = 0 do
+    def self.png(data : Bytes, compress : Bool = false) : Pixels
+      new(data, Format::PNG, compress: compress)
+    end
+
+    def self.rgba(data : Bytes, width : Int32, height : Int32, compress : Bool = false) : Pixels
+      new(data, Format::RGBA, width, height, compress: compress)
+    end
+
+    def self.rgb(data : Bytes, width : Int32, height : Int32, compress : Bool = false) : Pixels
+      new(data, Format::RGB, width, height, compress: compress)
+    end
+
+    def self.at(path : String, medium : Medium = Medium::File, format : Format = Format::PNG, width : Int32 = 0, height : Int32 = 0, compress : Bool = false, size : Int32 = 0, offset : Int32 = 0) : Pixels
+      new(path.to_slice, format, width, height, medium, compress, size, offset)
+    end
+  end
+
+  record Placement, id : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, width : Int32 = 0, height : Int32 = 0, offset_x : Int32 = 0, offset_y : Int32 = 0, columns : Int32 = 0, rows : Int32 = 0, z : Int32 = 0, hold_cursor : Bool = false, placeholder : Bool = false, parent : UInt32 = 0, parent_placement : UInt32 = 0, shift_x : Int32 = 0, shift_y : Int32 = 0
+
+  record Ack, image : UInt32, number : UInt32, placement : UInt32, message : String do
+    def ok? : Bool
+      message == "OK"
+    end
+
+    def error : String?
+      message unless ok?
+    end
+  end
+
+  record Notice, title : String = "", body : String = "", id : String? = nil, app : String? = nil, types : Array(String) = [] of String, icons : Array(String) = [] of String, icon : Bytes? = nil, icon_key : String? = nil, buttons : Array(String) = [] of String, sound : String? = nil, urgency : Urgency? = nil, expires : Time::Span? = nil, occasion : Occasion = Occasion::Always, focus : Bool = true, report : Bool = false, closes : Bool = false
+
+  record DropData, data : Bytes, flag : Int32 = 0, error : String? = nil, entry : Bool = false do
+    def ok? : Bool
+      error.nil?
+    end
+
+    def text : String
+      String.new(data)
+    end
+
+    def remote? : Bool
+      !entry && flag == 1
+    end
+
+    def symlink? : Bool
+      entry && flag == 1
+    end
+
+    def directory? : Bool
+      entry && flag != 0 && flag != 1
+    end
+
+    def handle : Int32
+      flag
+    end
+
+    def entries : Array(String)
+      text.split('\0', remove_empty: true)
+    end
+
+    def uris : Array(String)
+      text.lines.map(&.strip).reject { |line| line.empty? || line.starts_with?('#') }
+    end
+  end
+
   record Shortcut, code : Int32, mods : Mods, physical : Bool
   record Timer, at : Time::Span, kind : Kind, code : Int32 do
     enum Kind
@@ -400,20 +622,22 @@ class Term
     end
   end
 
-  alias Raw = Key | Mouse | Resize | Focus | Visibility | ColorScheme | Paste
+  alias Raw = Key | Mouse | Resize | Focus | Visibility | ColorScheme | Paste | Notification | Drop | Drag
   alias Event = Raw | TextInput | TypingMetric | KeyGesture | Binding | MouseGesture
-  alias Reply = String | Int32 | Status | Clipboard | Hash(String, Color?)
+  alias Reply = String | Int32 | Bool | Status | Clipboard | Size | Ack | DropData | Array(String) | Hash(String, Color?) | Hash(String, Array(String)) | Nil
 
-  record Request, query : Query, sequence : String, waiter : Channel(Reply)
+  record Request, query : Query, key : String, sequence : String, waiter : Channel(Reply), probe : Bool
 
   alias Output = String | Request
 
   struct Config
     property alternate_screen = true
     property app_name : String? = nil
+    property dnd_id             = 0
     property event_buffer       = 1024
     property query_timeout      = 1.second
     property clipboard_timeout  = 30.seconds
+    property transfer_timeout   = 30.seconds
     property hold_repeats       = 3
     property hold_after         = 500.milliseconds
     property multi_tap_window   = 300.milliseconds
@@ -482,11 +706,45 @@ class Term
     end
   end
 
+  private class Chain
+    getter meta = {} of String => String
+    getter body = IO::Memory.new
+  end
+
   def self.code(key : Char | Named | Int32) : Int32
     case key
     in Char  then key.ord
     in Named then key.value
     in Int32 then key
+    end
+  end
+
+  def self.machine_id : String?
+    raw = {% if flag?(:darwin) %}
+            `ioreg -rd1 -c IOPlatformExpertDevice`[/"IOPlatformUUID" = "([^"]+)"/, 1]?
+          {% elsif flag?(:win32) %}
+            `reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid`[/REG_SZ\s+(\S+)/, 1]?
+          {% else %}
+            File.read("/etc/machine-id").rstrip
+          {% end %}
+    raw.try { |id| "1:#{OpenSSL::HMAC.hexdigest(:sha256, MACHINE_KEY, id)}" }
+  rescue IO::Error
+    nil
+  end
+
+  def self.placeholder(id : UInt32, columns : Int32, rows : Int32, placement : UInt32 = 0) : Array(String)
+    high = (id >> 24).to_i
+    Array.new(rows) do |row|
+      String.build do |io|
+        io << "\e[38;2;" << ((id >> 16) & 255) << ';' << ((id >> 8) & 255) << ';' << (id & 255) << 'm'
+        io << "\e[58;2;" << ((placement >> 16) & 255) << ';' << ((placement >> 8) & 255) << ';' << (placement & 255) << 'm' if placement != 0
+        columns.times do |column|
+          io << PLACEHOLDER << DIACRITICS[row].unsafe_chr << DIACRITICS[column].unsafe_chr
+          io << DIACRITICS[high].unsafe_chr if high > 0
+        end
+        io << "\e[39m"
+        io << "\e[59m" if placement != 0
+      end
     end
   end
 
@@ -503,12 +761,21 @@ class Term
   getter output : Channel(Output)
 
   @state       = State::Ground
+  @string      = 0_u8
   @seq         = IO::Memory.new
   @values      = [] of Int32
   @starts      = [] of Int32
   @cell_width  = 0
   @cell_height = 0
   @transfer : Transfer?
+  @waiting = {} of {Query, String} => Deque(Channel(Reply))
+  @chains  = {} of String => Chain
+  @chain   = ""
+  @mux         : String
+  @credentials : String
+  @teardown    : String
+  @accepting = Atomic(Bool).new(false)
+  @offering  = Atomic(Bool).new(false)
 
   @held     = {} of Int32 => Held
   @latched  = Set(String).new
@@ -543,13 +810,14 @@ class Term
     @events      = Channel(Event).new(@config.event_buffer)
     @output      = Channel(Output).new(256)
     @raw         = Channel(Raw).new(256)
+    @pending     = Channel(Request).new(256)
     @stop        = Channel(Nil).new
     @reader_done = Channel(Nil).new
     @writer_done = Channel(Nil).new
-    @waiters     = Query.values.to_h { |query| {query, Channel(Channel(Reply)).new(32)} }
     @credentials = @config.app_name.try do |name|
       ":pw=#{Base64.strict_encode(UUID.random.to_s)}:name=#{Base64.strict_encode(name)}"
     end || ""
+    @mux  = keys(':', {'i', @config.dnd_id})
     @node = @root
     @config.sequences.each do |name, codes|
       codes.reduce(@root) { |node, code| node.children.put_if_absent(code) { Node.new } }.action = name
@@ -571,11 +839,14 @@ class Term
     return if @stop.closed?
     @stop.close
     begin
+      @output.send(dnd_code("t=A")) if @accepting.get
+      @output.send(dnd_code("t=o:x=2")) if @offering.get
       @output.send(@teardown)
     rescue Channel::ClosedError
     end
     @output.close
     @writer_done.receive?
+    @pending.close
     @events.close
     @reader_done.receive?
     @input.read_timeout = nil
@@ -702,6 +973,230 @@ class Term
     @output.send("\e[?996n")
   end
 
+  def window_size(limit : Time::Span = @config.query_timeout) : Size?
+    request(Query::Window, "\e[14t", limit).as?(Size)
+  end
+
+  def cell_size(limit : Time::Span = @config.query_timeout) : Size?
+    request(Query::Cell, "\e[16t", limit).as?(Size)
+  end
+
+  def image(pixels : Pixels, id : UInt32 = 0, number : UInt32 = 0, placement : Placement? = nil, quiet : Quiet = Quiet::None, transient : Bool = false, limit : Time::Span = @config.query_timeout) : Ack?
+    head, encoded = load(pixels)
+    control = merge(',', keys(',', {'a', placement ? 'T' : 't'}, {'i', id}, {'I', number}, {'q', quiet.value}, {'N', transient}), head, placement ? placed(placement) : "")
+    draw(control, encoded, id, number, quiet, limit)
+  end
+
+  def image_query(pixels : Pixels, id : UInt32 = 31, limit : Time::Span = @config.query_timeout) : Ack?
+    head, encoded = load(pixels)
+    sequence = String.build { |io| apc(io, merge(',', keys(',', {'a', 'q'}, {'i', id}), head), encoded, "") }
+    request(Query::Graphics, sequence, limit, "i#{id}", true).as?(Ack)
+  end
+
+  def supports_graphics?(limit : Time::Span = @config.query_timeout) : Bool
+    image_query(Pixels.rgb(Bytes.new(3), 1, 1), limit: limit).try(&.ok?) || false
+  end
+
+  def place(id : UInt32 = 0, number : UInt32 = 0, placement : Placement = Placement.new, quiet : Quiet = Quiet::None, limit : Time::Span = @config.query_timeout) : Ack?
+    control = merge(',', keys(',', {'a', 'p'}, {'i', id}, {'I', number}, {'q', quiet.value}), placed(placement))
+    draw(control, "", id, number, quiet, limit)
+  end
+
+  def delete_images(target : Delete = Delete::Visible, free : Bool = false, id : UInt32 = 0, number : UInt32 = 0, placement : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, z : Int32 = 0) : Nil
+    letter  = DELETES[target]
+    control = keys(',', {'a', 'd'}, {'d', free ? letter.upcase : letter}, {'i', id}, {'I', number}, {'p', placement}, {'x', x}, {'y', y}, {'z', z})
+    @output.send("\e_G#{control}#{ST}")
+  end
+
+  def frame(pixels : Pixels, id : UInt32 = 0, number : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, base : Int32 = 0, edit : Int32 = 0, gap : Int32 = 0, replace : Bool = false, background : UInt32 = 0, quiet : Quiet = Quiet::None, limit : Time::Span = @config.query_timeout) : Ack?
+    head, encoded = load(pixels)
+    control = merge(',', keys(',', {'a', 'f'}, {'i', id}, {'I', number}, {'q', quiet.value}, {'x', x}, {'y', y}, {'c', base}, {'r', edit}, {'z', gap}, {'X', replace}, {'Y', background}), head)
+    draw(control, encoded, id, number, quiet, limit, "a=f")
+  end
+
+  def animate(id : UInt32 = 0, number : UInt32 = 0, state : Playback? = nil, current : Int32 = 0, loops : Int32 = 0, target : Int32 = 0, gap : Int32 = 0, quiet : Quiet = Quiet::All, limit : Time::Span = @config.query_timeout) : Ack?
+    control = keys(',', {'a', 'a'}, {'i', id}, {'I', number}, {'q', quiet.value}, {'s', state.try(&.value) || 0}, {'c', current}, {'v', loops}, {'r', target}, {'z', gap})
+    draw(control, "", id, number, quiet, limit)
+  end
+
+  def compose(source : Int32, target : Int32, id : UInt32 = 0, number : UInt32 = 0, width : Int32 = 0, height : Int32 = 0, source_x : Int32 = 0, source_y : Int32 = 0, x : Int32 = 0, y : Int32 = 0, replace : Bool = false, quiet : Quiet = Quiet::All, limit : Time::Span = @config.query_timeout) : Ack?
+    control = keys(',', {'a', 'c'}, {'i', id}, {'I', number}, {'q', quiet.value}, {'r', source}, {'c', target}, {'w', width}, {'h', height}, {'X', source_x}, {'Y', source_y}, {'x', x}, {'y', y}, {'C', replace})
+    draw(control, "", id, number, quiet, limit)
+  end
+
+  def notify(notice : Notice) : String
+    id      = notice.id || UUID.random.to_s
+    actions = "#{"report," if notice.report}#{"-" unless notice.focus}focus"
+    meta = String.build do |io|
+      io << "i=" << id
+      io << ":a=" << actions unless actions == "focus"
+      io << ":c=1" if notice.closes
+      notice.app.try { |app| io << ":f=" << Base64.strict_encode(app) }
+      notice.types.each { |type| io << ":t=" << Base64.strict_encode(type) }
+      notice.icons.each { |icon| io << ":n=" << Base64.strict_encode(icon) }
+      notice.icon_key.try { |key| io << ":g=" << key }
+      io << ":o=" << notice.occasion.to_s.downcase unless notice.occasion.always?
+      notice.sound.try { |sound| io << ":s=" << Base64.strict_encode(sound) }
+      notice.urgency.try { |urgency| io << ":u=" << urgency.value }
+      notice.expires.try { |span| io << ":w=" << span.total_milliseconds.to_i }
+    end
+    parts = [] of {String, String}
+    slices(notice.title.to_slice, true).each { |chunk| parts << {"title", chunk} }
+    slices(notice.body.to_slice, true).each { |chunk| parts << {"body", chunk} }
+    slices(notice.buttons.join(SEPARATOR).to_slice, true).each { |chunk| parts << {"buttons", chunk} }
+    notice.icon.try { |icon| slices(icon, false).each { |chunk| parts << {"icon", chunk} } }
+    parts << {"title", ""} if parts.empty?
+    sequence = String.build do |io|
+      parts.each_with_index do |(type, chunk), index|
+        io << "\e]99;" << (index == 0 ? meta : "i=#{id}")
+        io << ":p=" << type unless type == "title"
+        io << ":e=1" unless chunk.empty?
+        notice.icon_key.try { |key| io << ":g=" << key } if type == "icon" && index > 0
+        io << ":d=0" unless index == parts.size - 1
+        io << ';' << chunk << ST
+      end
+    end
+    @output.send(sequence)
+    id
+  end
+
+  def notify(title : String, body : String = "", **options) : String
+    notify(Notice.new(**options, title: title, body: body))
+  end
+
+  def close_notification(id : String) : Nil
+    @output.send("\e]99;i=#{id}:p=close;#{ST}")
+  end
+
+  def notifications_alive(limit : Time::Span = @config.query_timeout) : Array(String)?
+    id = UUID.random.to_s
+    request(Query::NotifyAlive, "\e]99;i=#{id}:p=alive;#{ST}", limit, id).as?(Array(String))
+  end
+
+  def notification_support(limit : Time::Span = @config.query_timeout) : Hash(String, Array(String))?
+    id = UUID.random.to_s
+    request(Query::NotifySupport, "\e]99;i=#{id}:p=?;#{ST}", limit, id, true).as?(Hash(String, Array(String)))
+  end
+
+  def supports_dnd?(limit : Time::Span = @config.query_timeout) : Bool
+    request(Query::DndSupport, dnd_code("t=q"), limit, "", true).as?(Bool) || false
+  end
+
+  def accept_drops(*mimes : String, remote : Bool = false) : Nil
+    @accepting.set(true)
+    machine = Term.machine_id if remote
+    @output.send("#{dnd_code("t=a", mimes.join(' '))}#{dnd_code("t=a:x=1", machine) if machine}")
+  end
+
+  def stop_drops : Nil
+    @accepting.set(false)
+    @output.send(dnd_code("t=A"))
+  end
+
+  def drop_reply(operation : Operation = Operation::None, *mimes : String) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'm'}, {'o', operation.value}), mimes.join(' ')))
+  end
+
+  def drop_data(index : Int32, entry : Int32 = 0, limit : Time::Span = @config.transfer_timeout) : DropData?
+    sequence = dnd_code(keys(':', {'t', 'r'}, {'x', index}, {'y', entry}))
+    request(Query::DropData, sequence, limit, "#{index}:#{entry}:0").as?(DropData)
+  end
+
+  def drop_entry(handle : Int32, index : Int32, limit : Time::Span = @config.transfer_timeout) : DropData?
+    sequence = dnd_code(keys(':', {'t', 'r'}, {'Y', handle}, {'x', index}))
+    request(Query::DropData, sequence, limit, "#{index}:0:#{handle}").as?(DropData)
+  end
+
+  def drop_close(handle : Int32) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'r'}, {'Y', handle})))
+  end
+
+  def drop_finish(operation : Operation = Operation::None) : Nil
+    @output.send(dnd_code("t=r:o=#{operation.value}"))
+  end
+
+  def offer_drags(remote : Bool = false) : Nil
+    @offering.set(true)
+    machine = Term.machine_id if remote
+    @output.send(dnd_code("t=o:x=1", machine || ""))
+  end
+
+  def stop_drags : Nil
+    @offering.set(false)
+    @output.send(dnd_code("t=o:x=2"))
+  end
+
+  def drag_offer(operations : Operation, *mimes : String) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'o'}, {'o', operations.value}), mimes.join(' ')))
+  end
+
+  def drag_presend(index : Int32, data : Bytes) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'p'}, {'x', index}), Base64.strict_encode(data), true))
+  end
+
+  def drag_image(number : Int32, data : Bytes, format : Format, width : Int32, height : Int32, opacity : Int32 = 0) : Nil
+    meta = keys(':', {'t', 'p'}, {'x', -number}, {'y', format.value}, {'X', width}, {'Y', height}, {'o', opacity})
+    @output.send(dnd_code(meta, Base64.strict_encode(data), true))
+  end
+
+  def drag_text(number : Int32, text : String, numerator : Int32 = 1, denominator : Int32 = 1, opacity : Int32 = 0) : Nil
+    drag_image(number, text.to_slice, Format::Text, numerator, denominator, opacity)
+  end
+
+  def drag_show(index : Int32) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'P'}, {'x', index})))
+  end
+
+  def drag_start(limit : Time::Span = @config.transfer_timeout) : String?
+    request(Query::DragStart, dnd_code("t=P:x=-1"), limit).as?(String)
+  end
+
+  def drag_data(index : Int32, data : Bytes) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'e'}, {'y', index}), Base64.strict_encode(data), true))
+  end
+
+  def drag_fail(index : Int32, name : String, description : String? = nil) : Nil
+    @output.send(dnd_code(keys(':', {'t', 'E'}, {'y', index}), merge(':', name, description || "")))
+  end
+
+  def drag_abort(name : String, description : String? = nil) : Nil
+    @output.send(dnd_code("t=E", merge(':', name, description || "")))
+  end
+
+  def drag_cancel : Nil
+    @output.send(dnd_code("t=E:y=-1"))
+  end
+
+  def drag_entry(index : Int32, data : Bytes, flag : Int32 = 0, parent : Int32 = 0, child : Int32 = 0) : Nil
+    meta = keys(':', {'t', 'k'}, {'x', index}, {'X', flag}, {'Y', parent}, {'y', child})
+    @output.send(dnd_code(meta, Base64.strict_encode(data), true))
+  end
+
+  def drag_path(index : Int32, path : Path | String) : Nil
+    queue = Deque({Path, Int32, Int32}).new
+    queue << {Path.new(path), 0, 0}
+    handle = 1
+    while item = queue.shift?
+      target, parent, child = item
+      info = File.info(target, follow_symlinks: false)
+      if info.symlink?
+        drag_entry(index, File.readlink(target).to_slice, 1, parent, child)
+      elsif info.directory?
+        handle += 1
+        names = Dir.children(target).select do |name|
+          kind = File.info(target / name, follow_symlinks: false)
+          kind.file? || kind.directory? || kind.symlink?
+        end.sort!
+        names.each_with_index(1) { |name, number| queue << {target / name, handle, number} }
+        drag_entry(index, names.join('\0').to_slice, handle, parent, child)
+      elsif info.file?
+        drag_entry(index, File.open(target, &.getb_to_end), 0, parent, child)
+      end
+    end
+  rescue error : IO::Error
+    drag_abort(error.os_error.try(&.to_s) || "EIO")
+  end
+
   private def location(primary : Bool) : String
     primary ? ":loc=primary" : ""
   end
@@ -711,31 +1206,145 @@ class Term
     request(Query::ClipboardRead, sequence, limit).as?(Clipboard)
   end
 
-  private def request(query : Query, sequence : String, limit : Time::Span = @config.query_timeout) : Reply?
-    waiter = Channel(Reply).new(1)
-    @output.send(Request.new(query, sequence, waiter))
-    select
-    when reply = waiter.receive
-      reply
-    when timeout(limit)
-      waiter.close
+  private def keys(separator : Char, *pairs) : String
+    String.build do |io|
+      pairs.each do |name, value|
+        next if value == 0 || value == false
+        io << separator unless io.empty?
+        io << name << '=' << (value == true ? 1 : value)
+      end
+    end
+  end
+
+  private def merge(separator : Char, *parts : String) : String
+    parts.reject(&.empty?).join(separator)
+  end
+
+  private def placed(placement : Placement) : String
+    keys(',', {'p', placement.id}, {'x', placement.x}, {'y', placement.y}, {'w', placement.width}, {'h', placement.height}, {'X', placement.offset_x}, {'Y', placement.offset_y}, {'c', placement.columns}, {'r', placement.rows}, {'z', placement.z}, {'C', placement.hold_cursor}, {'U', placement.placeholder}, {'P', placement.parent}, {'Q', placement.parent_placement}, {'H', placement.shift_x}, {'V', placement.shift_y})
+  end
+
+  private def load(pixels : Pixels) : {String, String}
+    data = pixels.data
+    size = pixels.size
+    if pixels.compress && pixels.medium.direct?
+      size   = data.size if pixels.format.png?
+      packed = IO::Memory.new
+      Compress::Zlib::Writer.open(packed, &.write(data))
+      data = packed.to_slice
+    end
+    control = keys(',', {'f', pixels.format.value}, {'t', MEDIA[pixels.medium]}, {'s', pixels.width}, {'v', pixels.height}, {'S', size}, {'O', pixels.offset}, {'o', pixels.compress ? 'z' : 0})
+    {control, Base64.strict_encode(data)}
+  end
+
+  private def apc(io : IO, control : String, encoded : String, more : String) : Nil
+    if encoded.bytesize <= WIRE_CHUNK
+      io << "\e_G" << control
+      io << ';' << encoded unless encoded.empty?
+      io << ST
+      return
+    end
+    offset = 0
+    while offset < encoded.bytesize
+      head = offset == 0 ? control : more
+      io << "\e_G" << head
+      io << ',' unless head.empty?
+      io << "m=" << (offset + WIRE_CHUNK < encoded.bytesize ? 1 : 0) << ';'
+      io << encoded.byte_slice(offset, WIRE_CHUNK) << ST
+      offset += WIRE_CHUNK
+    end
+  end
+
+  private def draw(control : String, encoded : String, id : UInt32, number : UInt32, quiet : Quiet, limit : Time::Span, action : String = "") : Ack?
+    more     = merge(',', action, keys(',', {'q', quiet.value}))
+    sequence = String.build { |io| apc(io, control, encoded, more) }
+    if quiet.none? && (id != 0 || number != 0)
+      request(Query::Graphics, sequence, limit, number != 0 ? "I#{number}" : "i#{id}").as?(Ack)
+    else
+      @output.send(sequence)
       nil
     end
   end
 
-  private def route(query : Query, reply : Reply) : Nil
-    queue = @waiters[query]
+  private def slices(data : Bytes, text : Bool) : Array(String)
+    chunks = [] of String
+    offset = 0
+    while offset < data.size
+      size = Math.min(TEXT_CHUNK, data.size - offset)
+      if text
+        while size > 1 && offset + size < data.size && data[offset + size] & 0xc0 == 0x80
+          size -= 1
+        end
+      end
+      chunks << Base64.strict_encode(data[offset, size])
+      offset += size
+    end
+    chunks
+  end
+
+  private def dnd_code(meta : String, payload : String = "", stream : Bool = false) : String
+    prefix = "\e]#{DND};#{merge(':', meta, @mux)}"
+    String.build do |io|
+      offset = 0
+      while payload.bytesize - offset > (stream ? 0 : WIRE_CHUNK)
+        io << prefix << ":m=1;" << payload.byte_slice(offset, WIRE_CHUNK) << ST
+        offset += WIRE_CHUNK
+      end
+      io << prefix
+      io << ":m=0" if stream
+      io << ';' << payload.byte_slice(offset) if offset < payload.bytesize
+      io << ST
+    end
+  end
+
+  private def request(query : Query, sequence : String, limit : Time::Span = @config.query_timeout, key : String = "", probe : Bool = false) : Reply
+    waiter = Channel(Reply).new(2)
+    @output.send(Request.new(query, key, sequence, waiter, probe))
+    select
+    when reply = waiter.receive
+      reply
+    when timeout(limit)
+      nil
+    end
+  ensure
+    waiter.try &.close
+  end
+
+  private def admit : Nil
     loop do
       select
-      when waiter = queue.receive
-        next if waiter.closed?
-        waiter.send(reply)
-        break
+      when request = @pending.receive?
+        return unless request
+        @waiting.put_if_absent({request.query, request.key}) { Deque(Channel(Reply)).new } << request.waiter
       else
-        break
+        return
       end
     end
+  end
+
+  private def sweep : Nil
+    @waiting.reject! { |_, queue| queue.all?(&.closed?) }
+  end
+
+  private def route(query : Query, reply : Reply, key : String = "", strict : Bool = false) : Bool
+    admit
+    slot      = {query, key}
+    queue     = @waiting[slot]? || return false
+    delivered = false
+    while waiter = queue.shift?
+      delivered = deliver(waiter, reply)
+      break if delivered || strict
+    end
+    @waiting.delete(slot) if queue.empty?
+    delivered
+  end
+
+  private def deliver(waiter : Channel(Reply), reply : Reply) : Bool
+    return false if waiter.closed?
+    waiter.send(reply)
+    true
   rescue Channel::ClosedError
+    false
   end
 
   private def run_writer : Nil
@@ -752,7 +1361,7 @@ class Term
       end
       @io.flush
     end
-  rescue IO::Error
+  rescue IO::Error | Channel::ClosedError
   ensure
     @output.close
     @writer_done.close
@@ -763,17 +1372,21 @@ class Term
     in String
       @io << item
     in Request
-      @waiters[item.query].send(item.waiter)
+      @pending.send(item)
+      @pending.send(item.copy_with(query: Query::Attributes, key: "")) if item.probe
       @io << item.sequence
+      @io << ATTRIBUTES if item.probe
     end
   end
 
   private def run_reader : Nil
     buffer = Bytes.new(4096)
     until @stop.closed?
+      admit
       count = begin
         @input.read(buffer)
       rescue IO::TimeoutError
+        sweep
         next
       end
       break if count == 0
@@ -797,9 +1410,12 @@ class Term
       @seq.clear
       @state = case byte
                when 0x5b then State::Csi
-               when 0x5d then State::Osc
                when 0x1b then State::Escape
-               else           State::Ground
+               when 0x50, 0x58, 0x5d, 0x5e, 0x5f
+                 @string = byte
+                 State::Text
+               else
+                 State::Ground
                end
     in .csi?
       case byte
@@ -814,26 +1430,34 @@ class Term
       else
         @state = State::Ground
       end
-    in .osc?
+    in .text?
       case byte
       when 0x07
         @state = State::Ground
-        osc
+        text
       when 0x1b
-        @state = State::OscEscape
+        @state = State::TextEscape
       else
         @seq.write_byte(byte)
-        @state = State::Ground if @seq.size > OSC_LIMIT
+        @state = State::Ground if @seq.size > TEXT_LIMIT
       end
-    in .osc_escape?
+    in .text_escape?
       if byte == 0x5c
         @state = State::Ground
-        osc
+        text
       else
         @state = State::Escape
         feed(byte)
       end
     end
+  end
+
+  private def text : Nil
+    case @string
+    when 0x5d then osc
+    when 0x5f then apc
+    end
+  rescue Base64::Error
   end
 
   private def parse(bytes : Bytes) : Nil
@@ -876,6 +1500,8 @@ class Term
       mouse(letter == 'm') if letter.in?('M', 'm')
     when '?'
       case letter
+      when 'c'
+        route(Query::Attributes, nil, strict: true)
       when 'y'
         route(Query::Mode, param(1, 0, 0))
       when 'n'
@@ -892,9 +1518,22 @@ class Term
       when '~' then TILDES[param(0)]?.try { |named| key(named.value) }
       when 'I' then push Focus.new(true)
       when 'O' then push Focus.new(false)
-      when 't' then resize if param(0) == 48
+      when 't' then report
       else          LETTERS[letter]?.try { |named| key(named.value) }
       end
+    end
+  end
+
+  private def report : Nil
+    case param(0)
+    when 48
+      resize
+    when 4
+      route(Query::Window, Size.new(param(2, 0, 0), param(1, 0, 0)))
+    when 6
+      @cell_height = param(1, 0, 0)
+      @cell_width  = param(2, 0, 0)
+      route(Query::Cell, Size.new(@cell_width, @cell_height))
     end
   end
 
@@ -951,21 +1590,36 @@ class Term
     push Resize.new(rows, cols, height, width)
   end
 
-  private def osc : Nil
-    number, _, body = String.new(@seq.to_slice).partition(';')
-    case number
-    when "22"
-      route(Query::Shape, body)
-    when "21"
-      route(Query::Color, decode_colors(body))
-    when "5522"
-      meta, _, payload = body.partition(';')
-      fields = meta.split(':').to_h do |pair|
-        name, _, value = pair.partition('=')
-        {name, value}
-      end
-      clipboard(fields, payload)
+  private def fields(text : String, separator : Char = ':') : Hash(String, String)
+    text.split(separator, remove_empty: true).to_h do |pair|
+      name, _, value = pair.partition('=')
+      {name.strip, value.strip}
     end
+  end
+
+  private def number(meta : Hash(String, String), name : String) : Int32
+    meta[name]?.try(&.to_i?) || 0
+  end
+
+  private def osc : Nil
+    code, _, body = String.new(@seq.to_slice).partition(';')
+    meta, _, payload = body.partition(';')
+    case code.to_i?
+    when 22   then route(Query::Shape, body)
+    when 21   then route(Query::Color, decode_colors(body))
+    when 5522 then clipboard(fields(meta), payload)
+    when 99   then notified(fields(meta), payload)
+    when DND  then chained(fields(meta), payload)
+    end
+  end
+
+  private def apc : Nil
+    body = String.new(@seq.to_slice)
+    return unless body.starts_with?('G')
+    control, _, message = body.lchop('G').partition(';')
+    meta = fields(control, ',')
+    ack  = Ack.new(meta["i"]?.try(&.to_u32?) || 0_u32, meta["I"]?.try(&.to_u32?) || 0_u32, meta["p"]?.try(&.to_u32?) || 0_u32, message)
+    route(Query::Graphics, ack, ack.number != 0 ? "I#{ack.number}" : "i#{ack.image}")
   end
 
   private def decode_colors(body : String) : Hash(String, Color?)
@@ -992,7 +1646,6 @@ class Term
         route(Query::ClipboardRead, Clipboard.new(Status.parse?(status) || Status::EIO, {} of String => Bytes))
       end
     end
-  rescue Base64::Error
   end
 
   private def finish : Nil
@@ -1004,6 +1657,64 @@ class Term
     else
       mimes = data["."]?.try { |bytes| String.new(bytes).split } || [] of String
       push Paste.new(mimes, transfer.primary?, transfer.password)
+    end
+  end
+
+  private def notified(meta : Hash(String, String), payload : String) : Nil
+    id = meta["i"]? || "0"
+    case meta["p"]?
+    when "?"
+      route(Query::NotifySupport, fields(payload).transform_values(&.split(',')), id)
+    when "alive"
+      route(Query::NotifyAlive, payload.split(',', remove_empty: true), id)
+    when "close"
+      push Notification.new(:closed, id, untracked: payload == "untracked")
+    when nil, "title"
+      button = payload.to_i? || 0
+      push Notification.new(button > 0 ? Notification::Kind::Button : Notification::Kind::Activated, id, button)
+    end
+  end
+
+  private def chained(meta : Hash(String, String), payload : String) : Nil
+    if type = meta["t"]?
+      @chain = type.in?("r", "R") ? "r:#{number(meta, "x")}:#{number(meta, "y")}:#{number(meta, "Y")}" : type
+    end
+    name  = @chain
+    chain = @chains.put_if_absent(name) { Chain.new }
+    chain.meta.merge!(meta)
+    chain.body << payload
+    return if meta["m"]? == "1"
+    @chains.delete(name)
+    dnd(chain.meta, chain.body.to_s)
+  end
+
+  private def dnd(meta : Hash(String, String), payload : String) : Nil
+    col = number(meta, "x")
+    row = number(meta, "y")
+    case type = meta["t"]?
+    when "m", "M"
+      kind = type == "M" ? Drop::Kind::Land : (col < 0 ? Drop::Kind::Leave : Drop::Kind::Move)
+      push Drop.new(kind, col, row, number(meta, "X"), number(meta, "Y"), Operation.new(number(meta, "o") & 3), payload.presence.try(&.split))
+    when "r", "R"
+      entry = meta.has_key?("y") || meta.has_key?("Y")
+      data  = type == "r" ? DropData.new(Base64.decode(payload), number(meta, "X"), entry: entry) : DropData.new(Bytes.empty, error: payload, entry: entry)
+      route(Query::DropData, data, "#{col}:#{row}:#{number(meta, "Y")}")
+    when "o"
+      push Drag.new(:gesture, col, row, number(meta, "X"), number(meta, "Y"))
+    when "e"
+      case col
+      when 1 then push Drag.new(:accepted, index: row)
+      when 2 then push Drag.new(:action, operation: Operation.new(number(meta, "o") & 3))
+      when 3 then push Drag.new(:dropped)
+      when 4 then push Drag.new(:finished, canceled: row == 1)
+      when 5 then push Drag.new(:data_request, index: row)
+      end
+    when "E"
+      route(Query::DragStart, payload) || push(payload == "OK" ? Drag.new(:started) : Drag.new(:error, error: payload))
+    when "k"
+      push Drag.new(:file_request, index: col)
+    when "q"
+      route(Query::DndSupport, true)
     end
   end
 
@@ -1084,7 +1795,7 @@ class Term
 
   private def pressed(key : Key, now : Time::Span) : Nil
     code = key.code
-    @held[code] = Held.new(key, now, now - @last_press, @held.size)
+    @held[code] = Held.new(key, now, @last_press.zero? ? @last_press : now - @last_press, @held.size)
     @last_press = now
     arm(:hold, now, @config.hold_after, code)
     emit KeyGesture.new(:activate, key)
