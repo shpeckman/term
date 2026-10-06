@@ -4,7 +4,8 @@ require "uuid"
 require "compress/zlib"
 require "openssl/hmac"
 require "uri"
-require "tty"
+require "./term/tty"
+require "./term/pty"
 
 class Term
   ST          = "\e\\"
@@ -1025,7 +1026,7 @@ class Term
   @cell_width  = Atomic(Int32).new(0)
   @cell_height = Atomic(Int32).new(0)
   @setup       = ""
-  @saved : TTY::Termios?
+  @saved : LibC::Termios?
   @suspended = Atomic(Bool).new(false)
   @mutexes : Array(Mutex)
   @icons   = Set(String).new
@@ -1098,7 +1099,7 @@ class Term
     end
     screen    = @config.alternate_screen ? SCREEN : {"", ""}
     @teardown = screen[1]
-    @saved    = TTY.termios(@input.fd) if @input.tty?
+    @saved    = TTY.mode(@input.fd) if @input.tty?
     raw
     @input.read_timeout = POLL
     measure
@@ -1139,37 +1140,29 @@ class Term
   end
 
   private def measure : Resize?
-    size = TTY::Winsize.current(@io.fd) || return
+    size = TTY.window(@io.fd) || return
     return unless size.cols > 0 && size.rows > 0
-    @cell_width.set(size.xpixel.to_i // size.cols) if size.xpixel > 0
-    @cell_height.set(size.ypixel.to_i // size.rows) if size.ypixel > 0
-    Resize.new(size.rows.to_i, size.cols.to_i, size.ypixel.to_i, size.xpixel.to_i)
-  rescue TTY::Syscall::Error
-    nil
+    @cell_width.set(size.width // size.cols) if size.width > 0
+    @cell_height.set(size.height // size.rows) if size.height > 0
+    Resize.new(size.rows, size.cols, size.height, size.width)
   end
 
   private def raw : Nil
-    mode = @saved || return
-    mode.make_raw
-    mode.set(@input.fd)
-  rescue TTY::Syscall::Error
+    @saved.try { |mode| TTY.apply(@input.fd, TTY.raw(mode)) }
   end
 
   private def cooked : Nil
-    @saved.try &.set(@input.fd)
-  rescue TTY::Syscall::Error
+    @saved.try { |mode| TTY.apply(@input.fd, mode) }
   end
 
   private def park : Nil
-    group = TTY::Session.process_group
     if @@hooked
-      TTY::Session.signal_process_group(group, Signal::TSTP.value)
+      TTY.signal_group(Signal::TSTP)
     else
       suspend
-      TTY::Session.signal_process_group(group, Signal::STOP.value)
+      TTY.signal_group(Signal::STOP)
       resume
     end
-  rescue TTY::Syscall::Error
   end
 
   def refresh : Nil
