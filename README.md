@@ -13,6 +13,7 @@ It covers:
 - the kitty graphics protocol, including animation and Unicode placeholders
 - desktop notifications (OSC 99)
 - drag and drop, including remote files and directories (OSC 72)
+- a rendering layer, `Term::Render`: styled cell planes, compositing with damage tracking and differential ANSI output, color palettes and themes, and grapheme-aware text layout
 
 On terminals that lack these protocols, `term` falls back to legacy keyboard input, cell-based mouse reports and bracketed paste.
 
@@ -20,7 +21,7 @@ On terminals that lack these protocols, `term` falls back to legacy keyboard inp
 
 - Crystal `>= 1.21.0`
 - Linux or macOS. macOS support is written but untested. Windows is not supported.
-- No dependencies beyond the standard library (OpenSSL and zlib are linked).
+- Depends on [`byte_builder`](https://github.com/shpeckman/byte_builder) and [`termwidth`](https://github.com/shpeckman/termwidth) (OpenSSL and zlib are linked from the standard library).
 
 ## Installation
 
@@ -57,7 +58,7 @@ end
 
 - `Term.open` probes what the terminal supports, enables it, yields, and restores the terminal afterwards. The terminal is also restored on an exception, on `exit`, and on `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT`.
 - `term.events` is a `Channel(Term::Event)`. Read it from one fiber; `receive?` returns `nil` once the terminal is closed.
-- `term.print` and `term <<` are safe to call from any fiber. `term` does no drawing for you: cursor movement and text styling are your own escape sequences.
+- `term.print` and `term <<` are safe to call from any fiber. At this level `term` does no drawing for you: cursor movement and text styling are your own escape sequences — or use the [`Term::Render`](#rendering) layer, which draws whole frames for you.
 - Queries such as clipboard reads block the calling fiber and return the answer, or `nil` on timeout.
 
 ## How it behaves
@@ -429,6 +430,31 @@ when Term::Drag
 - MIME indexes are 0-based here; image numbers start at 1.
 - Data may be `Bytes` or an `IO`.
 - To drag files to another machine, call `drag_files(paths)`, pre-send the returned text as `text/uri-list`, and the terminal's file requests are answered for you.
+
+## Rendering
+
+`Term::Render` is an optional layer on top of the protocol API: an off-screen cell buffer model with compositing, damage tracking and differential ANSI output. It has no opinion about your application loop — you hand it a `ByteBuilder` per frame.
+
+```crystal
+compositor = Term::Render::Compositor.new
+compositor.resize(cols, rows)          # on Term::Resize
+
+header = compositor.plane(20, 1)       # an off-screen surface
+header.put(0, 0, "hello", fg: Term::Render::Paint.index(4), attrs: Term::Render::Attr::Bold)
+
+frame = ByteBuilder.new
+compositor.enter(frame)                # hides the cursor; call once
+compositor.render(frame)               # emits only what changed
+term.print String.new(frame.written)
+```
+
+- **`Compositor`** flattens all planes into a cell grid and emits the diff: SGR styling (including 256-color and truecolor), OSC 8 hyperlinks, cursor shape and position, kitty graphics placements and synchronized output (mode 2026, when you set `sync = true`). Scroll hints from `Plane#scroll` become terminal scroll-region sequences where possible. `leave(frame)` restores the cursor and unplaces images.
+- **`Plane`** is a clipped, nestable drawing surface with `put`, `fill`, `erase`, `scroll`, z-ordering (`Layer`), opacity, a text cursor and image sprites. `Plane` implements the `Term::Render::Canvas` interface.
+- **`Paint` / `Attr` / `Cell` / `Tile`** are the style vocabulary: foreground/background/underline colors (default, palette index or RGB) plus attribute flags. `Paint.role(n)` defers a color to the theme's role table.
+- **`Palette`** models the 256 terminal colors with nearest-color lookup, ramps and generation from a base16 set; **`ColorSpace`** does the blending math in linear, Lab or Oklab space.
+- **`Themes`** holds named `Theme`s, resolves role paints for the compositor, probes the terminal palette (via an injected `querier`), pushes palette changes with OSC 4/10/11 and animates transitions (via an injected `ticker`). It is framework-agnostic: output goes to an injected `output : Proc(ByteBuilder)`, change notifications to `on_theme` / `on_palette` callbacks. `Themes.survey(term)` reads the palette from a live `Term`.
+- **`TextLayout`** measures, wraps and truncates text by grapheme cluster (`TermWidth`), with horizontal alignment helpers.
+- **`Graphemes`** and **`Links`** intern repeated grapheme clusters and OSC 8 targets so cells stay a fixed size.
 
 ## TTY and PTY
 

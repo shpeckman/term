@@ -1,6 +1,6 @@
 # shard.yml
 name: term
-version: 0.10.0
+version: 0.11.0
 
 authors:
   - shpeckman <geelenrobin@proton.me>
@@ -8,3 +8,9 @@ authors:
 crystal: '>= 1.21.0'
 
 license: MIT
+
+dependencies:
+  termwidth:
+    github: shpeckman/termwidth
+  byte_builder:
+    github: shpeckman/byte_builder
