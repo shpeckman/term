@@ -3,6 +3,8 @@ require "base64"
 require "uuid"
 require "compress/zlib"
 require "openssl/hmac"
+require "sync/mutex"
+require "sync/exclusive"
 require "uri"
 require "./term/tty"
 require "./term/pty"
@@ -986,24 +988,23 @@ class Term
     end
   end
 
-  @@open   = [] of Term
-  @@lock   = Mutex.new
-  @@hooked = false
+  @@open   = Sync::Exclusive(Array(Term)).new([] of Term)
+  @@hooked = Atomic(Bool).new(false)
 
   def self.restore : Nil
-    @@lock.synchronize { @@open.dup }.each(&.restore)
+    @@open.lock(&.dup).each(&.restore)
   end
 
   def self.suspend : Nil
-    @@lock.synchronize { @@open.dup }.each(&.suspend)
+    @@open.lock(&.dup).each(&.suspend)
   end
 
   def self.resume : Nil
-    @@lock.synchronize { @@open.dup }.each(&.resume)
+    @@open.lock(&.dup).each(&.resume)
   end
 
   def self.refresh : Nil
-    @@lock.synchronize { @@open.dup }.each(&.refresh)
+    @@open.lock(&.dup).each(&.refresh)
   end
 
   def self.open(config : Config = Config.new, input : IO::FileDescriptor = STDIN, output : IO::FileDescriptor = STDOUT, & : Term ->)
@@ -1028,7 +1029,7 @@ class Term
   @setup       = ""
   @saved : LibC::Termios?
   @suspended = Atomic(Bool).new(false)
-  @mutexes : Array(Mutex)
+  @mutexes : Array(Sync::Mutex)
   @icons   = Set(String).new
   @backlog = Deque(Event).new
   @locks    : Mods?
@@ -1085,7 +1086,7 @@ class Term
     @stop        = Channel(Nil).new
     @reader_done = Channel(Nil).new
     @writer_done = Channel(Nil).new
-    @mutexes     = Family.values.map { Mutex.new(:reentrant) }
+    @mutexes     = Family.values.map { Sync::Mutex.new(:reentrant) }
     @credentials = @config.app_name.try do |name|
       ":pw=#{Base64.strict_encode(UUID.random.to_s)}:name=#{Base64.strict_encode(name)}"
     end || ""
@@ -1117,26 +1118,23 @@ class Term
   end
 
   private def register : Nil
-    @@lock.synchronize do
-      @@open << self
-      next if @@hooked || !@config.signals
-      @@hooked = true
-      at_exit { Term.restore }
-      SIGNALS.each do |signal|
-        signal.trap do
-          Term.restore
-          exit 128 + signal.value
-        end
+    @@open.lock(&.push(self))
+    return if !@config.signals || @@hooked.swap(true)
+    at_exit { Term.restore }
+    SIGNALS.each do |signal|
+      signal.trap do
+        Term.restore
+        exit 128 + signal.value
       end
-      {% unless flag?(:win32) %}
-        Signal::TSTP.trap do
-          Term.suspend
-          Process.signal(Signal::STOP, Process.pid)
-        end
-        Signal::CONT.trap { Term.resume }
-        Signal::WINCH.trap { Term.refresh }
-      {% end %}
     end
+    {% unless flag?(:win32) %}
+      Signal::TSTP.trap do
+        Term.suspend
+        Process.signal(Signal::STOP, Process.pid)
+      end
+      Signal::CONT.trap { Term.resume }
+      Signal::WINCH.trap { Term.refresh }
+    {% end %}
   end
 
   private def measure : Resize?
@@ -1156,7 +1154,7 @@ class Term
   end
 
   private def park : Nil
-    if @@hooked
+    if @@hooked.get
       TTY.signal_group(Signal::TSTP)
     else
       suspend
@@ -1207,7 +1205,7 @@ class Term
     @output.close
     @writer_done.receive?
     restore
-    @@lock.synchronize { @@open.delete(self) }
+    @@open.lock(&.delete(self))
     @pending.close
     @serving.close
     @events.close
