@@ -150,6 +150,8 @@ module Term::Render
         @front = Slice(Tile).new(@pile.cols * @pile.rows, Tile::VOID)
         @root.resize(cols, rows)
       end
+      @caret_on   = false
+      @caret_code = 0
       invalidate
     end
 
@@ -213,7 +215,7 @@ module Term::Render
           @front[(hint.top + count) * cols, moved * cols].move_to(@front[hint.top * cols, moved * cols])
           @front[(hint.top + moved) * cols, count * cols].fill(Tile::BLANK)
         else
-          @front[hint.top * cols, moved * cols].move_to(@front[(hint.top + moved) * cols, moved * cols])
+          @front[hint.top * cols, moved * cols].move_to(@front[(hint.top + count) * cols, moved * cols])
           @front[hint.top * cols, count * cols].fill(Tile::BLANK)
         end
         (hint.top...hint.bottom).each { |row| @pile.widen(row) }
