@@ -548,6 +548,13 @@ class Term
     def command? : Bool
       text.nil? || !(mods & COMMAND).none?
     end
+
+    def stroke(physical : Bool = false) : {Int32, Mods}
+      plain = mods & ~LOCKS
+      return {base || code, plain} if physical
+      upper = shifted if plain.shift?
+      {upper || code, upper ? plain & ~Mods::Shift : plain}
+    end
   end
 
   record Mouse, action : Action, button : Button, mods : Mods, x : Int32, y : Int32, col : Int32, row : Int32 do
@@ -820,7 +827,24 @@ class Term
     end
   end
 
-  record Shortcut, code : Int32, mods : Mods, physical : Bool
+  record Shortcut, code : Int32, mods : Mods, physical : Bool do
+    KEYS      = {"space" => ' '.ord, "esc" => Named::Escape.value, "return" => Named::Enter.value}
+    MODIFIERS = {"control" => Mods::Ctrl, "cmd" => Mods::Super, "command" => Mods::Super}
+
+    def self.parse(spec : String, physical : Bool = false) : Shortcut
+      raise ArgumentError.new("empty shortcut") if spec.empty?
+      head, _, name = spec.ends_with?('+') ? {spec.rchop.rchop('+'), "", "+"} : spec.rpartition('+')
+      mods = head.split('+', remove_empty: true).reduce(Mods::None) do |found, part|
+        found | (MODIFIERS[part.downcase]? || Mods.parse?(part).try { |flag| flag if flag.value.popcount == 1 } || raise ArgumentError.new("unknown modifier #{part.inspect}"))
+      end
+      code = name.size == 1 ? name[0].ord : KEYS[name.downcase]? || Named.parse?(name).try(&.value) || raise ArgumentError.new("unknown key #{name.inspect}")
+      new(code, mods, physical)
+    end
+
+    def matches?(key : Key) : Bool
+      key.stroke(physical) == {code, mods}
+    end
+  end
   record Timer, at : Time::Span, kind : Kind, code : Int32 do
     enum Kind
       Hold
@@ -981,6 +1005,37 @@ class Term
         io << "\e[59m" if placement != 0
       end
     end
+  end
+
+  def self.place_code(id : UInt32 = 0, number : UInt32 = 0, placement : Placement = Placement.new, quiet : Quiet = Quiet::None) : String
+    "\e_G#{place_control(id, number, placement, quiet)}#{ST}"
+  end
+
+  def self.delete_code(target : Delete = Delete::Visible, free : Bool = false, id : UInt32 = 0, number : UInt32 = 0, placement : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, z : Int32 = 0) : String
+    letter = DELETES[target]
+    "\e_G#{keys(',', {'a', 'd'}, {'d', free ? letter.upcase : letter}, {'i', id}, {'I', number}, {'p', placement}, {'x', x}, {'y', y}, {'z', z})}#{ST}"
+  end
+
+  protected def self.place_control(id : UInt32, number : UInt32, placement : Placement, quiet : Quiet) : String
+    merge(',', keys(',', {'a', 'p'}, {'i', id}, {'I', number}, {'q', quiet.value}), placed(placement))
+  end
+
+  protected def self.placed(placement : Placement) : String
+    keys(',', {'p', placement.id}, {'x', placement.x}, {'y', placement.y}, {'w', placement.width}, {'h', placement.height}, {'X', placement.offset_x}, {'Y', placement.offset_y}, {'c', placement.columns}, {'r', placement.rows}, {'z', placement.z}, {'C', placement.hold_cursor}, {'U', placement.placeholder}, {'P', placement.parent}, {'Q', placement.parent_placement}, {'H', placement.shift_x}, {'V', placement.shift_y})
+  end
+
+  protected def self.keys(separator : Char, *pairs) : String
+    String.build do |io|
+      pairs.each do |name, value|
+        next if value == 0 || value == false
+        io << separator unless io.empty?
+        io << name << '=' << (value == true ? 1 : value)
+      end
+    end
+  end
+
+  protected def self.merge(separator : Char, *parts : String) : String
+    parts.reject(&.empty?).join(separator)
   end
 
   def self.uri_list(paths : Enumerable(String | Path)) : String
@@ -1387,14 +1442,12 @@ class Term
   end
 
   def place(id : UInt32 = 0, number : UInt32 = 0, placement : Placement = Placement.new, quiet : Quiet = Quiet::None, limit : Time::Span = @config.query_timeout) : Ack?
-    control = merge(',', keys(',', {'a', 'p'}, {'i', id}, {'I', number}, {'q', quiet.value}), placed(placement))
-    draw(control, Bytes.empty, id, number, quiet, limit)
+    draw(Term.place_control(id, number, placement, quiet), Bytes.empty, id, number, quiet, limit)
   end
 
   def delete_images(target : Delete = Delete::Visible, free : Bool = false, id : UInt32 = 0, number : UInt32 = 0, placement : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, z : Int32 = 0) : Nil
-    letter  = DELETES[target]
-    control = keys(',', {'a', 'd'}, {'d', free ? letter.upcase : letter}, {'i', id}, {'I', number}, {'p', placement}, {'x', x}, {'y', y}, {'z', z})
-    exclusive(Family::Graphics) { @output.send("\e_G#{control}#{ST}") }
+    code = Term.delete_code(target, free, id, number, placement, x, y, z)
+    exclusive(Family::Graphics) { @output.send(code) }
   end
 
   def frame(pixels : Pixels, id : UInt32 = 0, number : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, base : Int32 = 0, edit : Int32 = 0, gap : Int32 = 0, replace : Bool = false, background : UInt32 = 0, quiet : Quiet = Quiet::None, limit : Time::Span = @config.query_timeout) : Ack?
@@ -1708,21 +1761,15 @@ class Term
   end
 
   private def keys(separator : Char, *pairs) : String
-    String.build do |io|
-      pairs.each do |name, value|
-        next if value == 0 || value == false
-        io << separator unless io.empty?
-        io << name << '=' << (value == true ? 1 : value)
-      end
-    end
+    Term.keys(separator, *pairs)
   end
 
   private def merge(separator : Char, *parts : String) : String
-    parts.reject(&.empty?).join(separator)
+    Term.merge(separator, *parts)
   end
 
   private def placed(placement : Placement) : String
-    keys(',', {'p', placement.id}, {'x', placement.x}, {'y', placement.y}, {'w', placement.width}, {'h', placement.height}, {'X', placement.offset_x}, {'Y', placement.offset_y}, {'c', placement.columns}, {'r', placement.rows}, {'z', placement.z}, {'C', placement.hold_cursor}, {'U', placement.placeholder}, {'P', placement.parent}, {'Q', placement.parent_placement}, {'H', placement.shift_x}, {'V', placement.shift_y})
+    Term.placed(placement)
   end
 
   private def load(pixels : Pixels) : {String, Bytes | IO}
@@ -2543,10 +2590,8 @@ class Term
   end
 
   private def shortcut(key : Key) : Nil
-    mods     = key.mods & ~LOCKS
-    shifted  = key.shifted if mods.shift?
-    physical = @physical[{key.base || key.code, mods}]?
-    symbolic = @symbolic[{shifted || key.code, shifted ? mods & ~Mods::Shift : mods}]?
+    physical = @physical[key.stroke(true)]?
+    symbolic = @symbolic[key.stroke]?
     emit Binding.new(:shortcut, physical) if physical
     emit Binding.new(:shortcut, symbolic) if symbolic
   end
