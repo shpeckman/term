@@ -1,6 +1,6 @@
 # src/term/tty.cr
 class Term
-  module TTY
+  module Term::TTY
     {% if flag?(:linux) %}
       TIOCGWINSZ = 0x5413
       TIOCSWINSZ = 0x5414
