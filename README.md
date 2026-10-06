@@ -403,11 +403,11 @@ when Term::Drag
 - Data may be `Bytes` or an `IO`.
 - To drag files to another machine, call `drag_files(paths)`, pre-send the returned text as `text/uri-list`, and the terminal's file requests are answered for you.
 
-## Term::TTY and Term::PTY
+## TTY and PTY
 
 Low-level helpers, useful for tests or for driving another program on a pseudo-terminal.
 
-`Term::TTY` is a set of functions on a file descriptor:
+`TTY` is a set of functions on a file descriptor:
 
 | Function                  | Returns                                               |
 |---------------------------|-------------------------------------------------------|
@@ -418,10 +418,10 @@ Low-level helpers, useful for tests or for driving another program on a pseudo-t
 | `resize(fd, window)`      | `Bool`                                                |
 | `signal_group(signal)`    | `Bool`                                                |
 
-`Term::PTY` is a pseudo-terminal pair:
+`PTY` is a pseudo-terminal pair:
 
 ```crystal
-pty = Term::PTY.spawn("sh", ["-c", "stty size"], window: Term::TTY::Window.new(24, 80))
+pty = PTY.spawn("sh", ["-c", "stty size"], window: TTY::Window.new(24, 80))
 puts pty.rest                          # "24 80\r\n"
 puts pty.process.not_nil!.wait.exit_code
 pty.close
