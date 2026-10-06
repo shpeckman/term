@@ -1030,6 +1030,7 @@ class Term
   @saved : LibC::Termios?
   @suspended = Atomic(Bool).new(false)
   @mutexes : Array(Sync::Mutex)
+  @wire    = Sync::Mutex.new
   @icons   = Set(String).new
   @backlog = Deque(Event).new
   @locks    : Mods?
@@ -1112,8 +1113,10 @@ class Term
     spawn(name: "term.server") { run_server }
     found = survey
     @features.set(found.value)
-    @teardown = FEATURES.reverse.join { |mode| mode.switch(found.includes?(mode.feature), false) } + screen[1]
-    @setup    = screen[0] + FEATURES.join { |mode| mode.switch(found.includes?(mode.feature), true) } + CELL_SIZE
+    @wire.synchronize do
+      @teardown = FEATURES.reverse.join { |mode| mode.switch(found.includes?(mode.feature), false) } + screen[1]
+      @setup    = screen[0] + FEATURES.join { |mode| mode.switch(found.includes?(mode.feature), true) } + CELL_SIZE
+    end
     @output.send(@setup.lchop(screen[0]))
   end
 
@@ -1171,17 +1174,21 @@ class Term
 
   def suspend : Nil
     return if @restored.get || @suspended.swap(true)
-    @io << @teardown
-    @io.flush
-    cooked
+    @wire.synchronize do
+      @io << @teardown
+      @io.flush
+      cooked
+    end
   rescue IO::Error
   end
 
   def resume : Nil
     return if @restored.get || !@suspended.swap(false)
-    raw
-    @io << @setup
-    @io.flush
+    @wire.synchronize do
+      raw
+      @io << @setup
+      @io.flush
+    end
   rescue IO::Error
   end
 
@@ -1191,17 +1198,18 @@ class Term
 
   protected def restore : Nil
     return if @restored.swap(true)
-    @io << dnd_code("t=A") if @accepting.get
-    @io << dnd_code("t=o:x=2") if @offering.get
-    @io << @teardown
-    @io.flush
-    cooked
+    @wire.synchronize do
+      @io << dnd_code("t=A") if @accepting.get
+      @io << dnd_code("t=o:x=2") if @offering.get
+      @io << @teardown
+      @io.flush
+      cooked
+    end
   rescue IO::Error
   end
 
   def close : Nil
-    return if @stop.closed?
-    @stop.close
+    return unless @stop.close
     @output.close
     @writer_done.receive?
     restore
@@ -1868,7 +1876,7 @@ class Term
           break
         end
       end
-      @io.flush
+      @wire.synchronize { @io.flush }
     end
   rescue IO::Error | Channel::ClosedError
   ensure
@@ -1879,12 +1887,14 @@ class Term
   private def transmit(item : Output) : Nil
     case item
     in String
-      @io << item
+      @wire.synchronize { @io << item }
     in Request
       @pending.send(item)
       @pending.send(item.copy_with(query: Query::Attributes, key: "")) if item.probe
-      @io << item.sequence
-      @io << ATTRIBUTES if item.probe
+      @wire.synchronize do
+        @io << item.sequence
+        @io << ATTRIBUTES if item.probe
+      end
     end
   end
 
