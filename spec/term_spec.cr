@@ -12,13 +12,23 @@ DA1       = "\e[?62;c"
 
 if scenario = ENV["TERM_SPEC_CHILD"]?
   config = Term::Config.new
-  config.detect = false
+  config.detect = scenario == "bare"
+  config.query_timeout = 50.milliseconds
+  config.signals = scenario != "unhooked"
   term = Term.new(config, STDIN, STDOUT)
   term.accept_drops
   term.print "READY"
-  sleep 100.milliseconds
-  exit 3 if scenario == "exit"
-  sleep 10.seconds
+  if scenario == "exit"
+    sleep 100.milliseconds
+    exit 3
+  end
+  spawn do
+    sleep 20.seconds
+    exit 1
+  end
+  while event = term.events.receive?
+    term.print "SIZE #{event.rows}x#{event.cols} #{event.width}x#{event.height}" if event.is_a?(Term::Resize)
+  end
   exit 1
 end
 
@@ -29,7 +39,7 @@ private def plain : Term::Config
   config
 end
 
-private def drain(screen : IO::FileDescriptor, needle : String) : String
+private def drain(screen, needle : String) : String
   screen.read_timeout = 20.milliseconds
   chunk = Bytes.new(65536)
   seen  = ""
@@ -87,14 +97,64 @@ private def await(term : Term, type : T.class) : T forall T
   end
 end
 
-private def child(scenario : String, & : Process ->) : {String, Process::Status}
-  process = Process.new(Process.executable_path.not_nil!, env: {"TERM_SPEC_CHILD" => scenario}, input: :pipe, output: :pipe, error: :close)
-  output  = process.output.as(IO::FileDescriptor)
-  seen    = drain(output, "READY")
-  yield process
-  output.read_timeout = 5.seconds
-  seen += output.gets_to_end
-  {seen, process.wait}
+private class Console
+  getter pty    : TTY::PTY
+  getter term   : Term
+  getter master : TTY::PTY::IO
+
+  def initialize(config : Term::Config = plain, size : TTY::Winsize? = nil, & : TTY::PTY ->)
+    @pty = TTY::PTY.open
+    size.try { |winsize| @pty.winsize = winsize }
+    yield @pty
+    @master = @pty.io
+    slave   = @pty.slave_io
+    config.job_control = false
+    @term = Term.new(config, slave, slave)
+  end
+
+  def feed(text : String) : Nil
+    @master << text
+    @master.flush
+  end
+
+  def expect(needle : String) : String
+    drain(@master, needle)
+  end
+
+  def close : Nil
+    @term.close
+    @pty.close
+  end
+end
+
+private def console(config : Term::Config = plain, size : TTY::Winsize? = nil, prepare : TTY::PTY -> = ->(_pty : TTY::PTY) { }, & : Console ->) : Nil
+  console = Console.new(config, size) { |pty| prepare.call(pty) }
+  begin
+    yield console
+  ensure
+    console.close
+  end
+end
+
+private def raw?(termios : TTY::Termios) : Bool
+  !termios.local.i_canon? && !termios.local.echo? && !termios.local.i_sig? && !termios.output.o_post?
+end
+
+private def child(scenario : String, & : TTY::PTY::Process, TTY::PTY::IO ->) : {String, TTY::ChildStatus?}
+  env = TTY::SpawnOptions.default_env
+  env["TERM_SPEC_CHILD"] = scenario
+  process = TTY::PTY.spawn(Process.executable_path.not_nil!, env: env, winsize: TTY::Winsize.new(30_u16, 100_u16, 1000_u16, 600_u16))
+  master  = process.pty.io
+  begin
+    drain(master, "READY")
+    yield process, master
+    master.read_timeout = 5.seconds
+    rest = master.gets_to_end
+    {rest, process.wait(5000)}
+  ensure
+    process.kill unless process.exited?
+    process.close
+  end
 end
 
 private def osc(body : String) : String
@@ -1796,18 +1856,6 @@ describe Term do
       writer.close
       screen.gets_to_end.should eq("")
     end
-
-    it "restores the terminal when the process is terminated by a signal" do
-      output, status = child("signal", &.signal(Signal::TERM))
-      output.should eq(SETUP + "\e]72;t=a\e\\READY\e]72;t=A\e\\" + TEARDOWN)
-      status.exit_code.should eq(128 + Signal::TERM.value)
-    end
-
-    it "restores the terminal when the process exits without closing" do
-      output, status = child("exit") { }
-      output.should eq(SETUP + "\e]72;t=a\e\\READY\e]72;t=A\e\\" + TEARDOWN)
-      status.exit_code.should eq(3)
-    end
   end
 
   describe "event delivery" do
@@ -2179,19 +2227,155 @@ describe Term do
       writer.close
       screen.gets_to_end.should eq(TEARDOWN)
     end
+  end
 
-    it "suspends on SIGTSTP, resumes on SIGCONT and still restores on SIGTERM" do
-      output, status = child("signal") do |process|
-        screen = process.output.as(IO::FileDescriptor)
-        process.signal(Signal::TSTP)
-        drain(screen, "\e[?1049l").should eq(TEARDOWN)
-        sleep 50.milliseconds
-        process.signal(Signal::CONT)
-        drain(screen, "\e[16t").should eq(SETUP)
-        process.signal(Signal::TERM)
+  describe "on a real terminal" do
+    it "enters raw mode on open and restores the exact original settings on close" do
+      original = nil
+      prepare = ->(pty : TTY::PTY) do
+        custom = pty.termios
+        custom.local = custom.local & ~TTY::LocalFlag::Echo
+        custom[TTY::ControlChar::Min] = 3_u8
+        pty.termios = custom
+        original = pty.termios
+        nil
       end
-      output.should end_with("\e]72;t=A\e\\" + TEARDOWN)
-      status.exit_code.should eq(128 + Signal::TERM.value)
+      console(prepare: prepare) do |console|
+        console.expect("\e[16t").should eq(SETUP)
+        raw?(console.pty.termios).should be_true
+        console.term.close
+        console.expect("\e[?1049l").should eq(TEARDOWN)
+        restored = console.pty.termios
+        restored.to_s.should eq(original.not_nil!.to_s)
+        restored.local.i_canon?.should be_true
+        restored.local.echo?.should be_false
+        restored[TTY::ControlChar::Min].should eq(3_u8)
+      end
+    end
+
+    it "passes input and output through the line discipline untouched" do
+      console do |console|
+        console.expect("\e[16t")
+        console.feed "\r\n\u0003\e[97u"
+        keys = Array.new(7) { await(console.term, Term::Key) }.select(&.press?)
+        keys.map(&.code).should eq([13, 106, 99, 97])
+        keys[1].ctrl?.should be_true
+        keys[2].ctrl?.should be_true
+        console.term.print "a\nb\tc"
+        console.expect("c").should eq("a\nb\tc")
+      end
+    end
+
+    it "leaves raw mode while suspended and when restored early" do
+      console do |console|
+        console.expect("\e[16t")
+        console.term.suspend
+        console.expect("\e[?1049l").should eq(TEARDOWN)
+        raw?(console.pty.termios).should be_false
+        console.term.resume
+        console.expect("\e[16t").should eq(SETUP)
+        raw?(console.pty.termios).should be_true
+        Term.restore
+        console.expect("\e[?1049l").should eq(TEARDOWN)
+        raw?(console.pty.termios).should be_false
+      end
+    end
+
+    it "reads the cell size from the terminal at startup" do
+      console(size: TTY::Winsize.new(30_u16, 100_u16, 1000_u16, 600_u16)) do |console|
+        console.expect("\e[16t")
+        console.feed "\e[<0;45;65M"
+        mouse = await(console.term, Term::Mouse)
+        {mouse.col, mouse.row}.should eq({4, 3})
+      end
+    end
+
+    it "reports a resize from the terminal when in-band resize is unsupported" do
+      config = Term::Config.new
+      config.signals = false
+      config.query_timeout = 60.milliseconds
+      console(config, TTY::Winsize.new(30_u16, 100_u16, 1000_u16, 600_u16)) do |console|
+        console.term.features.should eq(Term::Feature::None)
+        console.expect("\e[16t")
+        console.feed "\e[<0;5;3M"
+        mouse = await(console.term, Term::Mouse)
+        {mouse.col, mouse.row, mouse.x, mouse.y}.should eq({4, 2, 40, 40})
+        console.pty.winsize = TTY::Winsize.new(40_u16, 120_u16, 1200_u16, 800_u16)
+        console.term.refresh
+        resize = await(console.term, Term::Resize)
+        {resize.rows, resize.cols, resize.width, resize.height}.should eq({40, 120, 1200, 800})
+        console.feed "\e[<0;5;3M"
+        mouse = await(console.term, Term::Mouse)
+        {mouse.x, mouse.y}.should eq({40, 40})
+      end
+    end
+
+    it "does nothing on refresh when the terminal reports resizes itself" do
+      console(size: TTY::Winsize.new(30_u16, 100_u16, 1000_u16, 600_u16)) do |console|
+        console.expect("\e[16t")
+        console.term.refresh
+        console.feed "\e[I"
+        await(console.term, Term::Focus).gained.should be_true
+      end
+    end
+  end
+
+  describe "as a child process on a terminal" do
+    it "restores the terminal when terminated by a signal" do
+      seen = ""
+      rest, status = child("signal") do |process, master|
+        raw?(process.pty.termios).should be_true
+        process.signal(Signal::TERM.value)
+      end
+      rest.should end_with("\e]72;t=A\e\\" + TEARDOWN)
+      status.not_nil!.exit_status.should eq(128 + Signal::TERM.value)
+    end
+
+    it "restores the terminal when the process exits without closing" do
+      rest, status = child("exit") { }
+      rest.should end_with("\e]72;t=A\e\\" + TEARDOWN)
+      status.not_nil!.exit_status.should eq(3)
+    end
+
+    it "suspends on SIGTSTP with the terminal cooked and resumes raw on SIGCONT" do
+      rest, status = child("signal") do |process, master|
+        process.signal(Signal::TSTP.value)
+        process.wait_event(5000).not_nil!.stopped?.should be_true
+        drain(master, "\e[?1049l").should eq(TEARDOWN)
+        raw?(process.pty.termios).should be_false
+        process.signal(Signal::CONT.value)
+        process.wait_event(5000).not_nil!.continued?.should be_true
+        drain(master, "\e[16t").should eq(SETUP)
+        raw?(process.pty.termios).should be_true
+        process.signal(Signal::TERM.value)
+      end
+      rest.should end_with(TEARDOWN)
+      status.not_nil!.exit_status.should eq(128 + Signal::TERM.value)
+    end
+
+    it "stops itself on Ctrl-Z and comes back on continue" do
+      {"signal", "unhooked"}.each do |scenario|
+        child(scenario) do |process, master|
+          master << "\u001a"
+          master.flush
+          process.wait_event(5000).not_nil!.stopped?.should be_true
+          drain(master, "\e[?1049l").should eq(TEARDOWN)
+          raw?(process.pty.termios).should be_false
+          process.signal(Signal::CONT.value)
+          process.wait_event(5000).not_nil!.continued?.should be_true
+          drain(master, "\e[16t").should eq(SETUP)
+          raw?(process.pty.termios).should be_true
+          process.kill
+        end
+      end
+    end
+
+    it "turns a window size change into a resize event" do
+      child("bare") do |process, master|
+        process.pty.winsize = TTY::Winsize.new(40_u16, 120_u16, 1200_u16, 800_u16)
+        drain(master, "800").should end_with("SIZE 40x120 1200x800")
+        process.kill
+      end
     end
   end
 end

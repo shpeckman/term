@@ -4,6 +4,7 @@ require "uuid"
 require "compress/zlib"
 require "openssl/hmac"
 require "uri"
+require "tty"
 
 class Term
   ST          = "\e\\"
@@ -137,21 +138,10 @@ class Term
     {name, hex.to_i(16)}
   end
 
-  {% unless flag?(:win32) %}
-    TIOCGWINSZ = {% if flag?(:linux) %} 0x5413 {% else %} 0x40087468 {% end %}
+  lib LibTerm
+    fun shm_open(name : LibC::Char*, flags : LibC::Int, mode : LibC::ModeT) : LibC::Int
+  end
 
-    lib LibTerm
-      struct Winsize
-        rows : UInt16
-        cols : UInt16
-        width : UInt16
-        height : UInt16
-      end
-
-      fun ioctl(fd : LibC::Int, request : LibC::ULong, ...) : LibC::Int
-      fun shm_open(name : LibC::Char*, flags : LibC::Int, mode : LibC::ModeT) : LibC::Int
-    end
-  {% end %}
   STARTED    = Time.instant
   DIACRITICS = [
     0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346, 0x034a, 0x034b, 0x034c,
@@ -848,6 +838,7 @@ class Term
 
   struct Config
     property alternate_screen = true
+    property job_control      = true
     property detect           = true
     property signals          = true
     property app_name : String? = nil
@@ -1034,7 +1025,8 @@ class Term
   @cell_width  = Atomic(Int32).new(0)
   @cell_height = Atomic(Int32).new(0)
   @setup       = ""
-  @suspended   = Atomic(Bool).new(false)
+  @saved : TTY::Termios?
+  @suspended = Atomic(Bool).new(false)
   @mutexes : Array(Mutex)
   @icons   = Set(String).new
   @backlog = Deque(Event).new
@@ -1106,7 +1098,8 @@ class Term
     end
     screen    = @config.alternate_screen ? SCREEN : {"", ""}
     @teardown = screen[1]
-    @input.raw! if @input.tty?
+    @saved    = TTY.termios(@input.fd) if @input.tty?
+    raw
     @input.read_timeout = POLL
     measure
     register
@@ -1146,13 +1139,37 @@ class Term
   end
 
   private def measure : Resize?
-    {% unless flag?(:win32) %}
-      size = LibTerm::Winsize.new
-      return unless LibTerm.ioctl(@io.fd, TIOCGWINSZ, pointerof(size)) == 0 && size.cols > 0 && size.rows > 0
-      @cell_width.set(size.width.to_i // size.cols) if size.width > 0
-      @cell_height.set(size.height.to_i // size.rows) if size.height > 0
-      Resize.new(size.rows.to_i, size.cols.to_i, size.height.to_i, size.width.to_i)
-    {% end %}
+    size = TTY::Winsize.current(@io.fd) || return
+    return unless size.cols > 0 && size.rows > 0
+    @cell_width.set(size.xpixel.to_i // size.cols) if size.xpixel > 0
+    @cell_height.set(size.ypixel.to_i // size.rows) if size.ypixel > 0
+    Resize.new(size.rows.to_i, size.cols.to_i, size.ypixel.to_i, size.xpixel.to_i)
+  rescue TTY::Syscall::Error
+    nil
+  end
+
+  private def raw : Nil
+    mode = @saved || return
+    mode.make_raw
+    mode.set(@input.fd)
+  rescue TTY::Syscall::Error
+  end
+
+  private def cooked : Nil
+    @saved.try &.set(@input.fd)
+  rescue TTY::Syscall::Error
+  end
+
+  private def park : Nil
+    group = TTY::Session.process_group
+    if @@hooked
+      TTY::Session.signal_process_group(group, Signal::TSTP.value)
+    else
+      suspend
+      TTY::Session.signal_process_group(group, Signal::STOP.value)
+      resume
+    end
+  rescue TTY::Syscall::Error
   end
 
   def refresh : Nil
@@ -1165,13 +1182,13 @@ class Term
     return if @restored.get || @suspended.swap(true)
     @io << @teardown
     @io.flush
-    @input.cooked! if @input.tty?
+    cooked
   rescue IO::Error
   end
 
   def resume : Nil
     return if @restored.get || !@suspended.swap(false)
-    @input.raw! if @input.tty?
+    raw
     @io << @setup
     @io.flush
   rescue IO::Error
@@ -1187,7 +1204,7 @@ class Term
     @io << dnd_code("t=o:x=2") if @offering.get
     @io << @teardown
     @io.flush
-    @input.cooked! if @input.tty?
+    cooked
   rescue IO::Error
   end
 
@@ -2437,6 +2454,7 @@ class Term
     in .repeat?  then repeated(key)
     in .release? then released(key, now)
     end
+    park if @saved && @config.job_control && key.press? && key.code == 'z'.ord && (key.mods & ~LOCKS) == Mods::Ctrl
   end
 
   private def toggled(locks : Mods) : Nil
