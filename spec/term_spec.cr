@@ -659,6 +659,35 @@ describe Term do
       end
     end
 
+    it "parses shortcut specs" do
+      Term::Shortcut.parse("ctrl+shift+a").should eq(Term::Shortcut.new('a'.ord, Term::Mods::Ctrl | Term::Mods::Shift, false))
+      Term::Shortcut.parse("Control+S").should eq(Term::Shortcut.new('S'.ord, Term::Mods::Ctrl, false))
+      Term::Shortcut.parse("enter").should eq(Term::Shortcut.new(Term::Named::Enter.value, Term::Mods::None, false))
+      Term::Shortcut.parse("alt+page_up").code.should eq(Term::Named::PageUp.value)
+      Term::Shortcut.parse("f13").code.should eq(Term::Named::F13.value)
+      Term::Shortcut.parse("kp_5").code.should eq(Term::Named::Kp5.value)
+      Term::Shortcut.parse("ctrl++").should eq(Term::Shortcut.new('+'.ord, Term::Mods::Ctrl, false))
+      Term::Shortcut.parse("+").should eq(Term::Shortcut.new('+'.ord, Term::Mods::None, false))
+      Term::Shortcut.parse("cmd+space", physical: true).should eq(Term::Shortcut.new(' '.ord, Term::Mods::Super, true))
+      expect_raises(ArgumentError) { Term::Shortcut.parse("") }
+      expect_raises(ArgumentError) { Term::Shortcut.parse("hyperdrive+a") }
+      expect_raises(ArgumentError) { Term::Shortcut.parse("all+a") }
+      expect_raises(ArgumentError) { Term::Shortcut.parse("ctrl+nope") }
+    end
+
+    it "matches a shortcut against a key the way bindings do" do
+      press = Term::Key::Action::Press
+      save  = Term::Shortcut.parse("ctrl+s")
+      plus  = Term::Shortcut.parse("ctrl++")
+      quit  = Term::Shortcut.parse("ctrl+q", physical: true)
+      save.matches?(Term::Key.new('s'.ord, press, Term::Mods::Ctrl | Term::Mods::CapsLock, nil, nil, nil)).should be_true
+      save.matches?(Term::Key.new('s'.ord, press, Term::Mods::Alt, nil, nil, nil)).should be_false
+      plus.matches?(Term::Key.new('='.ord, press, Term::Mods::Ctrl | Term::Mods::Shift, '+'.ord, nil, nil)).should be_true
+      quit.matches?(Term::Key.new('a'.ord, press, Term::Mods::Ctrl, nil, 'q'.ord, nil)).should be_true
+      quit.matches?(Term::Key.new('q'.ord, press, Term::Mods::Ctrl, nil, nil, nil)).should be_true
+      quit.matches?(Term::Key.new('a'.ord, press, Term::Mods::Ctrl, nil, nil, nil)).should be_false
+    end
+
     it "matches physical shortcuts on the base layout key" do
       config = plain
       config.shortcut("quit", 'q', Term::Mods::Ctrl, physical: true)
@@ -1190,6 +1219,19 @@ describe Term do
         rig.term.delete_images(:frames, id: 2)
         rig.expect("\e_Ga=d,d=a\e\\\e_Ga=d,d=i,i=10\e\\\e_Ga=d,d=i,i=10,p=7\e\\\e_Ga=d,d=Z,z=-1\e\\\e_Ga=d,d=p,x=3,y=4\e\\\e_Ga=d,d=N,I=13\e\\\e_Ga=d,d=r,x=2,y=9\e\\\e_Ga=d,d=Q,x=3,y=4,z=5\e\\\e_Ga=d,d=f,i=2\e\\")
         Term::DELETES.values.sort.join.should eq("acfinpqrxyz")
+      end
+    end
+
+    it "builds placement and delete codes that match what the methods send" do
+      rig do |rig|
+        layout = Term::Placement.new(id: 3, columns: 4, rows: 2, z: -1)
+        Term.place_code(id: 9, placement: layout, quiet: :all).should eq("\e_Ga=p,i=9,q=2,p=3,c=4,r=2,z=-1\e\\")
+        Term.place_code(number: 2).should eq("\e_Ga=p,I=2\e\\")
+        Term.delete_code.should eq("\e_Ga=d,d=a\e\\")
+        Term.delete_code(:id, free: true, id: 10, placement: 7).should eq("\e_Ga=d,d=I,i=10,p=7\e\\")
+        rig.term.place(id: 9, placement: layout, quiet: :all)
+        rig.term.delete_images(:id, free: true, id: 10, placement: 7)
+        rig.expect(Term.place_code(id: 9, placement: layout, quiet: :all) + Term.delete_code(:id, free: true, id: 10, placement: 7))
       end
     end
 
