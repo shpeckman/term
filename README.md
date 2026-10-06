@@ -449,8 +449,33 @@ pty.close
 
 ## Development
 
+Run the suite once:
+
 ```sh
 crystal spec
 ```
 
 The suite drives `Term` over pipes and real pseudo-terminals. The child-process examples read `/proc` and so run on Linux only.
+
+Run it thoroughly before a release:
+
+```sh
+spec/run.sh
+```
+
+`spec/run.sh` builds the suite three ways (default, `-Dexecution_context` and `--release`) and, for each build, runs it in defined order, in random order with several seeds, and one example at a time. Isolated runs catch examples that only pass because of what ran before them. A failing run prints the tail of its output, including the seed for random-order runs, and the script exits non-zero.
+
+| Variable  | Default | Effect                                                           |
+|-----------|---------|------------------------------------------------------------------|
+| `ONLY`    | all     | Run a single build: `default`, `execution_context` or `release`. |
+| `REPEATS` | `3`     | Defined-order runs per build.                                    |
+| `SEEDS`   | `5`     | Random-order runs per build.                                     |
+| `LIMIT`   | `300`   | Seconds before a single run is killed as hung.                   |
+
+```sh
+ONLY=default SEEDS=20 spec/run.sh
+```
+
+Keep the spec file free of top-level local variables.  
+They are visible inside every `describe` and `it` block, and on Crystal 1.21.1 a top-level `term` next to a top-level `config` made an example read the wrong `Term` inside a nested captured block.  
+The child-process scenario lives in a method for that reason.
