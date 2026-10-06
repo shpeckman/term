@@ -10,7 +10,7 @@ TEARDOWN  = MODES_OFF + "\e[?1049l"
 PROBES    = "\e[?1049h\e[?u\e[c\e[?2048$p\e[c\e[?1003$p\e[c\e[?1016$p\e[c\e[?1004$p\e[c\e[?2033$p\e[c\e[?2031$p\e[c\e[?5522$p\e[c"
 DA1       = "\e[?62;c"
 
-if scenario = ENV["TERM_SPEC_CHILD"]?
+private def child(scenario : String) : NoReturn
   config = Term::Config.new
   config.detect = scenario == "bare"
   config.query_timeout = 50.milliseconds
@@ -31,6 +31,8 @@ if scenario = ENV["TERM_SPEC_CHILD"]?
   end
   exit 1
 end
+
+ENV["TERM_SPEC_CHILD"]?.try { |scenario| child(scenario) }
 
 private def plain : Term::Config
   config = Term::Config.new
