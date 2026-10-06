@@ -844,6 +844,8 @@ class Term
     property job_control      = true
     property detect           = true
     property signals          = true
+    property enter            = ""
+    property leave            = ""
     property app_name : String? = nil
     property clipboard_id       = "term"
     property busy_retries       = 3
@@ -1100,7 +1102,7 @@ class Term
       (shortcut.physical ? @physical : @symbolic)[{shortcut.code, shortcut.mods}] = name
     end
     screen    = @config.alternate_screen ? SCREEN : {"", ""}
-    @teardown = screen[1]
+    @teardown = @config.leave + screen[1]
     @saved    = TTY.mode(@input.fd) if @input.tty?
     raw
     @input.read_timeout = POLL
@@ -1114,8 +1116,8 @@ class Term
     found = survey
     @features.set(found.value)
     @wire.synchronize do
-      @teardown = FEATURES.reverse.join { |mode| mode.switch(found.includes?(mode.feature), false) } + screen[1]
-      @setup    = screen[0] + FEATURES.join { |mode| mode.switch(found.includes?(mode.feature), true) } + CELL_SIZE
+      @teardown = @config.leave + FEATURES.reverse.join { |mode| mode.switch(found.includes?(mode.feature), false) } + screen[1]
+      @setup    = screen[0] + FEATURES.join { |mode| mode.switch(found.includes?(mode.feature), true) } + CELL_SIZE + @config.enter
     end
     @output.send(@setup.lchop(screen[0]))
   end
@@ -1183,13 +1185,21 @@ class Term
   end
 
   def resume : Nil
-    @wire.synchronize do
-      next if @restored.get || !@suspended.swap(false)
+    resumed = @wire.synchronize do
+      next false if @restored.get || !@suspended.swap(false)
       raw
       @io << @setup
       @io.flush
+      true
     end
-  rescue IO::Error
+    return unless resumed
+    measure.try do |resize|
+      select
+      when @raw.send(resize)
+      else
+      end
+    end
+  rescue IO::Error | Channel::ClosedError
   end
 
   def features : Feature

@@ -2629,7 +2629,7 @@ describe Term do
         stopped?(process, true).should be_true
         TTY.raw?(pty.mode.not_nil!).should be_false
         process.signal(Signal::CONT)
-        drain(pty.master, "\e[16t").should eq(SETUP)
+        drain(pty.master, "1000x600").should eq(SETUP + "SIZE 30x100 1000x600")
         stopped?(process, false).should be_true
         TTY.raw?(pty.mode.not_nil!).should be_true
         process.signal(Signal::TERM)
@@ -2646,7 +2646,7 @@ describe Term do
           stopped?(process, true).should be_true
           TTY.raw?(pty.mode.not_nil!).should be_false
           process.signal(Signal::CONT)
-          drain(pty.master, "\e[16t").should eq(SETUP)
+          drain(pty.master, "1000x600").should eq(SETUP + "SIZE 30x100 1000x600")
           stopped?(process, false).should be_true
           TTY.raw?(pty.mode.not_nil!).should be_true
           process.signal(Signal::KILL)
