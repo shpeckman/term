@@ -815,15 +815,42 @@ describe Term do
       end
     end
 
-    it "coalesces consecutive wheel reports into one scroll gesture per direction" do
-      rig do |rig|
+    it "reports the first wheel step at once and batches the rest until the direction turns" do
+      config = plain
+      config.scroll_window = 5.seconds
+      rig(config) do |rig|
         rig.feed "\e[<64;5;5M\e[<64;5;5M\e[<64;5;5M\e[<65;5;5M"
-        up = rig.event(Term::MouseGesture, &.kind.scroll?)
-        up.count.should eq(3)
-        up.mouse.button.should eq(Term::Mouse::Button::WheelUp)
+        first = rig.event(Term::MouseGesture, &.kind.scroll?)
+        first.count.should eq(1)
+        first.velocity.should eq(0.0)
+        first.mouse.button.should eq(Term::Mouse::Button::WheelUp)
+        rest = rig.event(Term::MouseGesture, &.kind.scroll?)
+        rest.count.should eq(2)
+        rest.mouse.button.should eq(Term::Mouse::Button::WheelUp)
         down = rig.event(Term::MouseGesture, &.kind.scroll?)
         down.count.should eq(1)
+        down.velocity.should eq(0.0)
         down.mouse.button.should eq(Term::Mouse::Button::WheelDown)
+      end
+    end
+
+    it "emits one scroll gesture per window while the wheel keeps turning" do
+      config = plain
+      config.scroll_window = 60.milliseconds
+      rig(config) do |rig|
+        rig.feed "\e[<64;5;5M"
+        rig.event(Term::MouseGesture, &.kind.scroll?).count.should eq(1)
+        rig.feed "\e[<64;5;5M\e[<64;5;5M"
+        started = Time.instant
+        batch   = rig.event(Term::MouseGesture, &.kind.scroll?)
+        batch.count.should eq(2)
+        batch.velocity.should be > 0.0
+        started.elapsed.should be < 500.milliseconds
+        sleep 150.milliseconds
+        rig.feed "\e[<64;5;5M"
+        again = rig.event(Term::MouseGesture, &.kind.scroll?)
+        again.count.should eq(1)
+        again.velocity.should eq(0.0)
       end
     end
 

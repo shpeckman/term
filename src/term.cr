@@ -890,7 +890,7 @@ class Term
     property multi_click_window = 400.milliseconds
     property long_press_after   = 500.milliseconds
     property hover_dwell_after  = 500.milliseconds
-    property scroll_window      = 50.milliseconds
+    property scroll_window      = 16.milliseconds
     property swipe_velocity     = 500.0
     getter chords    = {} of String => Array(Int32)
     getter sequences = {} of String => Array(Int32)
@@ -1127,9 +1127,9 @@ class Term
   @click_at    = Time::Span.zero
   @click_count = 0
   @scroll : Mouse?
-  @scroll_at    = Time::Span.zero
-  @scroll_from  = Time::Span.zero
-  @scroll_count = 0
+  @scroll_until   = Time::Span.zero
+  @scroll_emitted = Time::Span.zero
+  @scroll_count   = 0
   @dragging     = false
   @inside       = false
   @dwelling     = false
@@ -2439,7 +2439,7 @@ class Term
       now = clock
       @timers.reject! do |timer|
         next false if timer.at > now
-        fire(timer)
+        fire(timer, now)
         true
       end
     end
@@ -2469,7 +2469,7 @@ class Term
     @timers << Timer.new(now + delay, kind, code)
   end
 
-  private def fire(timer : Timer) : Nil
+  private def fire(timer : Timer, now : Time::Span) : Nil
     case timer.kind
     in .hold?
       @held[timer.code]?.try { |held| hold(held) }
@@ -2485,7 +2485,7 @@ class Term
       press = @press
       emit MouseGesture.new(:long_press, press) if press && !@dragging
     in .scroll?
-      flush_scroll
+      flush_scroll(now)
     end
   end
 
@@ -2670,22 +2670,28 @@ class Term
   end
 
   private def scrolled(mouse : Mouse, now : Time::Span) : Nil
-    flush_scroll if @scroll.try(&.button) != mouse.button
-    @scroll_from = now if @scroll_count == 0
-    @scroll      = mouse
+    turned = @scroll.try(&.button) != mouse.button
+    flush_scroll(now) if turned
+    fresh   = turned || (@scroll_count == 0 && now >= @scroll_until)
+    @scroll = mouse
     @scroll_count += 1
-    @scroll_at = now
-    arm(:scroll, now, @config.scroll_window)
+    @scroll_emitted = now if fresh
+    if fresh || now >= @scroll_until
+      flush_scroll(now)
+    elsif @scroll_count == 1
+      arm(:scroll, now, @scroll_until - now)
+    end
   end
 
-  private def flush_scroll : Nil
-    mouse         = @scroll || return
-    count         = @scroll_count
-    span          = @scroll_at - @scroll_from
-    @scroll       = nil
-    @scroll_count = 0
-    velocity      = span > Time::Span.zero ? count / span.total_seconds : 0.0
-    emit MouseGesture.new(:scroll, mouse, count, 0, 0, velocity)
+  private def flush_scroll(now : Time::Span) : Nil
+    mouse = @scroll || return
+    count = @scroll_count
+    return if count == 0
+    gap             = now - @scroll_emitted
+    @scroll_count   = 0
+    @scroll_emitted = now
+    @scroll_until   = now + @config.scroll_window
+    emit MouseGesture.new(:scroll, mouse, count, 0, 0, gap > Time::Span.zero ? count / gap.total_seconds : 0.0)
   end
 
   private def stir(mouse : Mouse) : Nil
