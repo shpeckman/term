@@ -1173,8 +1173,8 @@ class Term
   end
 
   def suspend : Nil
-    return if @restored.get || @suspended.swap(true)
     @wire.synchronize do
+      next if @restored.get || @suspended.swap(true)
       @io << @teardown
       @io.flush
       cooked
@@ -1183,8 +1183,8 @@ class Term
   end
 
   def resume : Nil
-    return if @restored.get || !@suspended.swap(false)
     @wire.synchronize do
+      next if @restored.get || !@suspended.swap(false)
       raw
       @io << @setup
       @io.flush
@@ -1197,8 +1197,8 @@ class Term
   end
 
   protected def restore : Nil
-    return if @restored.swap(true)
     @wire.synchronize do
+      next if @restored.swap(true)
       @io << dnd_code("t=A") if @accepting.get
       @io << dnd_code("t=o:x=2") if @offering.get
       @io << @teardown

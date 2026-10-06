@@ -315,6 +315,101 @@ private def marker?(event : Term::Event, key : Char) : Bool
   event.is_a?(Term::TypingMetric) && event.code == key.ord
 end
 
+SIZE_ASK    = "\e[14t"
+SIZE_ANSWER = "\e[4;600;800t"
+POOL        = Fiber::ExecutionContext::Parallel.new("term.spec", 4)
+
+private def swarm(count : Int32, &block : Int32 ->) : Nil
+  results = Channel(Exception?).new(count)
+  count.times do |index|
+    POOL.spawn do
+      block.call(index)
+      results.send(nil)
+    rescue error
+      results.send(error)
+    end
+  end
+  Array.new(count) { results.receive }.compact.first?.try { |error| raise error }
+end
+
+private def launch(context : Fiber::ExecutionContext::Parallel?, config : Term::Config, reader : IO::FileDescriptor, writer : IO::FileDescriptor) : Term
+  return Term.new(config, reader, writer) unless context
+  made = Channel(Term).new(1)
+  context.spawn { made.send(Term.new(config, reader, writer)) }
+  made.receive
+end
+
+private def capture(config : Term::Config = plain, context : Fiber::ExecutionContext::Parallel? = nil, pattern : Regex = /\e\[14t/, reply : Regex::MatchData -> String = ->(_match : Regex::MatchData) { SIZE_ANSWER }, & : Term, IO::FileDescriptor ->) : String
+  reader, feed = IO.pipe
+  screen, writer = IO.pipe
+  output = Channel(String).new(1)
+  seen   = String::Builder.new
+  spawn do
+    tail  = ""
+    chunk = Bytes.new(65536)
+    loop do
+      count = screen.read(chunk)
+      break if count == 0
+      text = String.new(chunk[0, count])
+      seen << text
+      tail += text
+      begin
+        while match = pattern.match(tail)
+          feed << reply.call(match)
+          tail = match.post_match
+        end
+        feed.flush
+      rescue IO::Error
+      end
+      tail = tail.byte_slice({tail.bytesize - 64, 0}.max)
+    end
+  rescue IO::Error
+  ensure
+    output.send(seen.to_s)
+  end
+  term = launch(context, config, reader, writer)
+  begin
+    yield term, feed
+  ensure
+    feed.close
+    term.close
+    writer.close
+  end
+  result = select
+  when text = output.receive
+    text
+  when timeout(10.seconds)
+    raise "output never ended"
+  end
+  screen.close
+  reader.close
+  result
+end
+
+private def roundtrip : String
+  reader, feed = IO.pipe
+  screen, writer = IO.pipe
+  term = Term.new(plain, reader, writer)
+  Term.refresh
+  feed.close
+  term.close
+  writer.close
+  output = screen.gets_to_end
+  screen.close
+  reader.close
+  output
+end
+
+private def settle(term : Term) : Nil
+  term.window_size(5.seconds).should eq(Term::Size.new(800, 600))
+end
+
+private def cycles(ending : String) : Regex
+  setup    = Regex.escape(SETUP)
+  teardown = Regex.escape(TEARDOWN)
+  Regex.new("\\A#{setup}(?:#{teardown}#{setup})*#{teardown}#{ending}\\z")
+end
+
 describe Term do
   describe "lifecycle" do
     it "enables every mode on open and undoes them in reverse on close" do
@@ -2320,6 +2415,117 @@ describe Term do
         console.term.refresh
         console.feed "\e[I"
         await(console.term, Term::Focus).gained.should be_true
+      end
+    end
+  end
+
+  describe "parallel execution" do
+    it "tracks terminals opened and closed in parallel" do
+      swarm(8) do |_index|
+        10.times { roundtrip.should eq(SETUP + TEARDOWN) }
+      end
+      output = capture do |term|
+        settle(term)
+        Term.restore
+      end
+      output.gsub(SIZE_ASK, "").should eq(SETUP + TEARDOWN)
+    end
+
+    it "keeps escape sequences from parallel writers intact" do
+      output = capture do |term|
+        swarm(8) do |writer|
+          200.times { term.color(writer, "rgb:00/00/00") }
+        end
+        settle(term)
+      end
+      body  = output.gsub(SIZE_ASK, "").lchop(SETUP).rchop(TEARDOWN)
+      codes = body.scan(/\e\]21;(\d)=rgb:00\/00\/00\e\\/)
+      codes.size.should eq(1600)
+      codes.sum(&.[0].bytesize).should eq(body.bytesize)
+      codes.map(&.[1]).tally.values.should eq([200] * 8)
+    end
+
+    it "keeps a multi-part transfer contiguous among parallel transfers" do
+      payload = Bytes.new(Term::RAW_CHUNK * 3 + 1, 65_u8)
+      output = capture do |term|
+        swarm(4) do |index|
+          20.times { term.drag_data(index + 1, payload) }
+        end
+        settle(term)
+      end
+      marks = output.scan(/\e\]72;t=e:y=(\d):m=([01])/).map { |match| {match[1], match[2]} }
+      marks.size.should eq(4 * 20 * 5)
+      marks.each_slice(5) do |stream|
+        stream.map(&.[0]).uniq.size.should eq(1)
+        stream.map(&.[1]).should eq(["1", "1", "1", "1", "0"])
+      end
+    end
+
+    it "routes every reply to its own caller under parallel queries" do
+      settings = plain
+      settings.query_timeout = 5.seconds
+      reply = ->(match : Regex::MatchData) do
+        match[1]?.try { |mode| "\e[?#{mode};#{mode.to_i.even? ? 1 : 4}$y" } || SIZE_ANSWER
+      end
+      capture(settings, pattern: /\e\[\?(\d+)\$p|\e\[14t/, reply: reply) do |term|
+        swarm(8) do |index|
+          25.times do |round|
+            mode = 10000 + index * 100 + round
+            term.supports?(mode).should eq(mode.even?)
+            term.window_size.should eq(Term::Size.new(800, 600))
+          end
+        end
+      end
+    end
+
+    it "keeps suspend, resume and output whole under parallel callers" do
+      output = capture do |term|
+        settle(term)
+        swarm(8) do |index|
+          50.times do |round|
+            term.suspend
+            term.print "<#{index}.#{round}>"
+            term.resume
+          end
+        end
+        settle(term)
+      end
+      tokens = output.scan(/<\d+\.\d+>/).map(&.[0])
+      tokens.size.should eq(400)
+      tokens.uniq.size.should eq(400)
+      output.gsub(/<\d+\.\d+>/, "").gsub(SIZE_ASK, "").should match(cycles(""))
+    end
+
+    it "writes nothing after restore whatever races with it" do
+      output = capture do |term|
+        settle(term)
+        swarm(8) do |index|
+          40.times do |round|
+            term.suspend
+            Term.restore if index == 0 && round == 20
+            term.resume
+          end
+        end
+      end
+      output.gsub(SIZE_ASK, "").should match(cycles("(?:#{Regex.escape(TEARDOWN)})?"))
+    end
+
+    it "tears down once when closed from several fibers at once" do
+      output = capture do |term|
+        settle(term)
+        swarm(8) { |_index| term.close }
+        term.closed?.should be_true
+      end
+      output.gsub(SIZE_ASK, "").should eq(SETUP + TEARDOWN)
+    end
+
+    it "delivers events in order when its own fibers run in parallel" do
+      keys = Array.new(3000) { |index| 'a' + index % 26 }
+      capture(context: POOL) do |term, feed|
+        feed << keys.join { |key| tap(key) }
+        feed.flush
+        seen = Array.new(6000) { await(term, Term::Key) }.select(&.press?).map(&.code)
+        seen.should eq(keys.map(&.ord))
       end
     end
   end
