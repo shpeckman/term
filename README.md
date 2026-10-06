@@ -138,7 +138,7 @@ end
 | `long_press_after`           | 500 ms    | Time before a mouse press becomes a long press                                                             |
 | `hover_dwell_after`          | 500 ms    | Time before a still pointer reports a dwell                                                                |
 | `hover_radius`               | 4 px      | Movement tolerated during a dwell                                                                          |
-| `scroll_window`              | 50 ms     | Window for coalescing wheel reports                                                                        |
+| `scroll_window`              | 16 ms     | Shortest time between two `Scroll` gestures while the wheel keeps turning                                  |
 | `swipe_velocity`             | 500 px/s  | Speed at which a drag also reports a swipe                                                                 |
 
 Bindings:
@@ -198,6 +198,8 @@ Everything on `term.events` is one of the following.
 `Mouse` actions: `Press`, `Release`, `Drag`, `Hover`, `Scroll`, `Leave`. Buttons: `Left`, `Middle`, `Right`, `None`, `WheelUp`, `WheelDown`, `WheelLeft`, `WheelRight`, `Aux8` to `Aux11`. `x` and `y` are pixels, `col` and `row` are cells.
 
 `MouseGesture` kinds: `Click` (`count` is 1, 2, 3…), `DragStart`, `DragMove`, `DragEnd`, `Enter`, `HoverDwell`, `HoverEnd`, `Motion`, `Scroll` (`count` is the number of lines), `Swipe`, `Chord` (`count` is the number of buttons held), `LongPress`. `direction` gives `Left`, `Right`, `Up` or `Down` from `dx` and `dy`.
+
+`Scroll` reports the first wheel step at once, with `count` 1. While the wheel keeps turning it then reports once per `scroll_window`, with `count` the steps since the previous gesture and `velocity` in steps per second; `velocity` is zero for the first gesture after a pause. A change of direction starts over. The raw `Mouse` scroll events still arrive for every step, so handle one or the other.
 
 ### Terminal
 
