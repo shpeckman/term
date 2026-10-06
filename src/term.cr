@@ -6,6 +6,8 @@ require "openssl/hmac"
 require "sync/mutex"
 require "sync/exclusive"
 require "uri"
+require "byte_builder"
+require "termwidth"
 require "./term/tty"
 require "./term/pty"
 
@@ -2715,3 +2717,14 @@ class Term
     span > Time::Span.zero ? Math.hypot(dx, dy) / span.total_seconds : 0.0
   end
 end
+
+require "./term/render/color_space"
+require "./term/render/palette"
+require "./term/render/paint"
+require "./term/render/text_layout"
+require "./term/render/canvas"
+require "./term/render/theme"
+require "./term/render/sprite"
+require "./term/render/plane"
+require "./term/render/pile"
+require "./term/render/compositor"

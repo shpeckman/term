@@ -1,0 +1,10 @@
+version: 2.0
+shards:
+  byte_builder:
+    git: https://github.com/shpeckman/byte_builder.git
+    version: 0.6.0+git.commit.5996df244c6efb188bf333911ab665421328f368
+
+  termwidth:
+    git: https://github.com/shpeckman/termwidth.git
+    version: 0.1.0+git.commit.2065eb6f4128ae24214f857ee0b08fff8c75469e
+

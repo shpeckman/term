@@ -32,7 +32,7 @@ attempt() {
 
 locations() {
   local file
-  for file in spec/*_spec.cr; do
+  for file in spec/*_spec.cr spec/render/*_spec.cr; do
     grep -nE '^[[:space:]]*it[[:space:]]+"' "$file" | cut -d: -f1 | sed "s|^|$file:|"
   done
 }
@@ -41,7 +41,7 @@ suite() {
   local name="$1" flags="$2" binary="$BUILD/$1" seed round location
   printf '== %s\n' "$name"
   printf '   build\n'
-  attempt "$name build" crystal build $flags -o "$binary" spec/*_spec.cr || return
+  attempt "$name build" crystal build $flags -o "$binary" spec/*_spec.cr spec/render/*_spec.cr || return
   printf '   defined order x%s\n' "$REPEATS"
   for round in $(seq "$REPEATS"); do
     attempt "$name defined order #$round" "$binary"
