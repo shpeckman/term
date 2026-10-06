@@ -139,6 +139,7 @@ end
 | `hover_dwell_after`          | 500 ms    | Time before a still pointer reports a dwell                                                                |
 | `hover_radius`               | 4 px      | Movement tolerated during a dwell                                                                          |
 | `scroll_window`              | 16 ms     | Shortest time between two `Scroll` gestures while the wheel keeps turning                                  |
+| `scroll_pause`               | 200 ms    | Gap between wheel steps after which scrolling counts as starting again                                     |
 | `swipe_velocity`             | 500 px/s  | Speed at which a drag also reports a swipe                                                                 |
 
 Bindings:
@@ -199,7 +200,9 @@ Everything on `term.events` is one of the following.
 
 `MouseGesture` kinds: `Click` (`count` is 1, 2, 3…), `DragStart`, `DragMove`, `DragEnd`, `Enter`, `HoverDwell`, `HoverEnd`, `Motion`, `Scroll` (`count` is the number of lines), `Swipe`, `Chord` (`count` is the number of buttons held), `LongPress`. `direction` gives `Left`, `Right`, `Up` or `Down` from `dx` and `dy`.
 
-`Scroll` reports the first wheel step at once, with `count` 1. While the wheel keeps turning it then reports once per `scroll_window`, with `count` the steps since the previous gesture and `velocity` in steps per second; `velocity` is zero for the first gesture after a pause. A change of direction starts over. The raw `Mouse` scroll events still arrive for every step, so handle one or the other.
+`Scroll` reports the first wheel step at once, with `count` 1. While the wheel keeps turning it then reports once per `scroll_window`, with `count` the steps since the previous gesture. `velocity` is in steps per second, measured against the previous gesture in the same direction and never over less than one `scroll_window`; it is zero for the first gesture after `scroll_pause` without a step, and after a turn. The vertical and the horizontal wheel are tracked separately, so only the opposite direction on the same wheel is a turn. The raw `Mouse` scroll events still arrive for every step, so handle one or the other.
+
+`HoverDwell` carries a `Hover` report with no button at the pointer's position, whatever the last report was.
 
 ### Terminal
 

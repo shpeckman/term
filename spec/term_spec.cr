@@ -815,15 +815,87 @@ describe Term do
       end
     end
 
-    it "coalesces consecutive wheel reports into one scroll gesture per direction" do
-      rig do |rig|
+    it "reports the first wheel step at once and batches the rest until the direction turns" do
+      config = plain
+      config.scroll_window = 5.seconds
+      rig(config) do |rig|
         rig.feed "\e[<64;5;5M\e[<64;5;5M\e[<64;5;5M\e[<65;5;5M"
-        up = rig.event(Term::MouseGesture, &.kind.scroll?)
-        up.count.should eq(3)
-        up.mouse.button.should eq(Term::Mouse::Button::WheelUp)
+        first = rig.event(Term::MouseGesture, &.kind.scroll?)
+        first.count.should eq(1)
+        first.velocity.should eq(0.0)
+        first.mouse.button.should eq(Term::Mouse::Button::WheelUp)
+        rest = rig.event(Term::MouseGesture, &.kind.scroll?)
+        rest.count.should eq(2)
+        rest.mouse.button.should eq(Term::Mouse::Button::WheelUp)
         down = rig.event(Term::MouseGesture, &.kind.scroll?)
         down.count.should eq(1)
+        down.velocity.should eq(0.0)
         down.mouse.button.should eq(Term::Mouse::Button::WheelDown)
+      end
+    end
+
+    it "emits one scroll gesture per window while the wheel keeps turning" do
+      config = plain
+      config.scroll_window = 60.milliseconds
+      rig(config) do |rig|
+        rig.feed "\e[<64;5;5M"
+        rig.event(Term::MouseGesture, &.kind.scroll?).count.should eq(1)
+        rig.feed "\e[<64;5;5M\e[<64;5;5M"
+        started = Time.instant
+        batch   = rig.event(Term::MouseGesture, &.kind.scroll?)
+        batch.count.should eq(2)
+        batch.velocity.should be > 0.0
+        started.elapsed.should be < 500.milliseconds
+      end
+    end
+
+    it "bounds the velocity of steps cut short by a turn" do
+      config = plain
+      config.scroll_window = 5.seconds
+      rig(config) do |rig|
+        rig.feed "\e[<65;5;5M\e[<65;5;5M\e[<64;5;5M"
+        rig.event(Term::MouseGesture, &.kind.scroll?).velocity.should eq(0.0)
+        cut = rig.event(Term::MouseGesture, &.kind.scroll?)
+        cut.count.should eq(1)
+        cut.mouse.button.should eq(Term::Mouse::Button::WheelDown)
+        cut.velocity.should be_close(0.2, 0.001)
+        rig.event(Term::MouseGesture, &.kind.scroll?).mouse.button.should eq(Term::Mouse::Button::WheelUp)
+      end
+    end
+
+    it "measures slow steady scrolling and forgets it after a pause" do
+      config = plain
+      config.scroll_window = 10.milliseconds
+      config.scroll_pause  = 400.milliseconds
+      rig(config) do |rig|
+        rig.feed "\e[<64;5;5M"
+        rig.event(Term::MouseGesture, &.kind.scroll?).velocity.should eq(0.0)
+        sleep 80.milliseconds
+        rig.feed "\e[<64;5;5M"
+        steady = rig.event(Term::MouseGesture, &.kind.scroll?)
+        steady.count.should eq(1)
+        steady.velocity.should be > 2.5
+        steady.velocity.should be < 13.0
+        sleep 600.milliseconds
+        rig.feed "\e[<64;5;5M"
+        rig.event(Term::MouseGesture, &.kind.scroll?).velocity.should eq(0.0)
+      end
+    end
+
+    it "tracks the vertical and the horizontal wheel on their own" do
+      config = plain
+      config.scroll_window = 60.milliseconds
+      rig(config) do |rig|
+        rig.feed "\e[<65;5;5M\e[<66;5;5M\e[<65;5;5M\e[<66;5;5M\e[<65;5;5M"
+        seen = Array.new(4) { rig.event(Term::MouseGesture, &.kind.scroll?) }
+        seen.first(2).map(&.mouse.button).should eq([Term::Mouse::Button::WheelDown, Term::Mouse::Button::WheelLeft])
+        seen.first(2).map(&.velocity).should eq([0.0, 0.0])
+        down = seen.last(2).find!(&.mouse.button.wheel_down?)
+        left = seen.last(2).find!(&.mouse.button.wheel_left?)
+        down.count.should eq(2)
+        left.count.should eq(1)
+        down.velocity.should be > 0.0
+        left.velocity.should be > 0.0
       end
     end
 
@@ -853,6 +925,18 @@ describe Term do
         rig.event(Term::MouseGesture, &.kind.hover_dwell?).mouse.x.should eq(5)
         rig.feed "\e[<35;9;9M"
         rig.event(Term::MouseGesture, &.kind.hover_end?).mouse.x.should eq(9)
+      end
+    end
+
+    it "reports a dwell as a plain hover whatever the last report was" do
+      config = plain
+      config.hover_dwell_after = 20.milliseconds
+      rig(config) do |rig|
+        rig.feed "\e[<35;5;5M\e[<64;5;5M"
+        dwell = rig.event(Term::MouseGesture, &.kind.hover_dwell?).mouse
+        dwell.action.should eq(Term::Mouse::Action::Hover)
+        dwell.button.should eq(Term::Mouse::Button::None)
+        dwell.x.should eq(5)
       end
     end
   end
