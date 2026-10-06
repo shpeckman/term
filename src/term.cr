@@ -891,6 +891,7 @@ class Term
     property long_press_after   = 500.milliseconds
     property hover_dwell_after  = 500.milliseconds
     property scroll_window      = 16.milliseconds
+    property scroll_pause       = 200.milliseconds
     property swipe_velocity     = 500.0
     getter chords    = {} of String => Array(Int32)
     getter sequences = {} of String => Array(Int32)
@@ -922,6 +923,13 @@ class Term
 
     def initialize(@key, @at, @latency, @overlap)
     end
+  end
+
+  private class Wheel
+    property mouse : Mouse?
+    property count   = 0
+    property closes  = Time::Span.zero
+    property emitted = Time::Span.zero
   end
 
   private class Node
@@ -1126,13 +1134,10 @@ class Term
   @click : Mouse?
   @click_at    = Time::Span.zero
   @click_count = 0
-  @scroll : Mouse?
-  @scroll_until   = Time::Span.zero
-  @scroll_emitted = Time::Span.zero
-  @scroll_count   = 0
-  @dragging       = false
-  @inside         = false
-  @dwelling       = false
+  @wheels      = {Wheel.new, Wheel.new}
+  @dragging    = false
+  @inside      = false
+  @dwelling    = false
 
   def initialize(@config : Config = Config.new, @input : IO::FileDescriptor = STDIN, @io : IO::FileDescriptor = STDOUT)
     ident(@config.clipboard_id)
@@ -2479,13 +2484,13 @@ class Term
       last = @last
       if last && @inside && !@dwelling
         @dwelling = true
-        emit MouseGesture.new(:hover_dwell, last)
+        emit MouseGesture.new(:hover_dwell, last.copy_with(action: Mouse::Action::Hover, button: Mouse::Button::None))
       end
     in .long_press?
       press = @press
       emit MouseGesture.new(:long_press, press) if press && !@dragging
     in .scroll?
-      flush_scroll(now)
+      flush_scroll(@wheels[timer.code], now)
     end
   end
 
@@ -2670,28 +2675,30 @@ class Term
   end
 
   private def scrolled(mouse : Mouse, now : Time::Span) : Nil
-    turned = @scroll.try(&.button) != mouse.button
-    flush_scroll(now) if turned
-    fresh   = turned || (@scroll_count == 0 && now >= @scroll_until)
-    @scroll = mouse
-    @scroll_count += 1
-    @scroll_emitted = now if fresh
-    if fresh || now >= @scroll_until
-      flush_scroll(now)
-    elsif @scroll_count == 1
-      arm(:scroll, now, @scroll_until - now)
+    axis   = mouse.button.wheel_left? || mouse.button.wheel_right? ? 1 : 0
+    wheel  = @wheels[axis]
+    turned = wheel.mouse.try(&.button) != mouse.button
+    flush_scroll(wheel, now) if turned
+    wheel.mouse = mouse
+    wheel.count += 1
+    if turned || (wheel.count == 1 && now >= wheel.closes)
+      flush_scroll(wheel, now, turned || now - wheel.emitted > @config.scroll_pause)
+    elsif now >= wheel.closes
+      flush_scroll(wheel, now)
+    elsif wheel.count == 1
+      arm(:scroll, now, wheel.closes - now, axis)
     end
   end
 
-  private def flush_scroll(now : Time::Span) : Nil
-    mouse = @scroll || return
-    count = @scroll_count
+  private def flush_scroll(wheel : Wheel, now : Time::Span, rested : Bool = false) : Nil
+    mouse = wheel.mouse || return
+    count = wheel.count
     return if count == 0
-    gap             = now - @scroll_emitted
-    @scroll_count   = 0
-    @scroll_emitted = now
-    @scroll_until   = now + @config.scroll_window
-    emit MouseGesture.new(:scroll, mouse, count, 0, 0, gap > Time::Span.zero ? count / gap.total_seconds : 0.0)
+    span = {now - wheel.emitted, @config.scroll_window}.max
+    wheel.count = 0
+    wheel.emitted = now
+    wheel.closes = now + @config.scroll_window
+    emit MouseGesture.new(:scroll, mouse, count, 0, 0, rested || span <= Time::Span.zero ? 0.0 : count / span.total_seconds)
   end
 
   private def stir(mouse : Mouse) : Nil
