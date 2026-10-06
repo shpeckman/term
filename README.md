@@ -149,6 +149,25 @@ Bindings:
 
 A key is a `Char`, a `Term::Named` or a raw key code. Bindings arrive as `Term::Binding` events carrying the name.
 
+### Shortcuts without a binding
+
+A `Term::Shortcut` can also be used on its own, to test keys yourself instead of registering a name at open:
+
+```crystal
+save = Term::Shortcut.parse("ctrl+s")
+quit = Term::Shortcut.parse("ctrl+q", physical: true)
+
+# in the event loop
+when Term::Key
+  save_file if event.press? && save.matches?(event)
+```
+
+- `Shortcut.parse(spec, physical: false)` reads modifiers and a key joined by `+`. An unknown modifier or key raises `ArgumentError`.
+- **Modifiers** are the `Term::Mods` names (`shift`, `alt`, `ctrl`, `super`, `hyper`, `meta`), plus `control`, `cmd` and `command`. Case does not matter.
+- **Keys** are a single character, a `Term::Named` name in any casing (`enter`, `page_up`, `PageUp`, `f13`, `kp_5`), or `space`, `esc` or `return`. A trailing `+` is the plus key, as in `ctrl++`.
+- `matches?(key)` applies the same rule as a configured shortcut: lock modifiers are ignored, and `physical` compares the key's position on a standard layout.
+- **Shift is consumed when the terminal reports the shifted character.** Write `ctrl+S`, not `ctrl+shift+s`, for a letter, and `ctrl++`, not `ctrl+shift+=`. The same holds for `config.shortcut`.
+
 ## Events
 
 Everything on `term.events` is one of the following.
@@ -165,7 +184,7 @@ Everything on `term.events` is one of the following.
 | `Lock`         | `lock`, `active`                                    | Caps lock or num lock toggled                        |
 | `TypingMetric` | `code`, `dwell`, `latency`, `overlap`               | On each key release                                  |
 
-`Key` helpers: `named` (a `Term::Named` or `nil`), `char`, `press?`, `repeat?`, `release?`, `shift?`, `alt?`, `ctrl?`, `modifier?`, `command?`.
+`Key` helpers: `named` (a `Term::Named` or `nil`), `char`, `press?`, `repeat?`, `release?`, `shift?`, `alt?`, `ctrl?`, `modifier?`, `command?`, and `stroke(physical = false)`, the key code and modifiers that shortcuts are matched on.
 
 `KeyGesture` kinds: `Activate`, `AutoRepeat`, `Tap`, `MultiTap`, `HoldStart`, `HoldEnd`, `HoldReached`, `ModifierTap`. For `Tap` and `MultiTap`, `count` is the number of consecutive taps.
 
@@ -293,6 +312,8 @@ term.supports_graphics?
 | `image_query(pixels, id: 31)`                                                                            | `Ack?`                       |
 | `supports_graphics?`                                                                                     | `Bool`                       |
 | `Term.placeholder(id, columns, rows, placement = 0, compact: false)`                                     | `Array(String)`, one per row |
+| `Term.place_code(id:, number:, placement:, quiet:)`                                                      | `String`                     |
+| `Term.delete_code(target, free:, id:, number:, placement:, x:, y:, z:)`                                  | `String`                     |
 
 - **Pixel data** is a `Term::Pixels`: `Pixels.png(data)`, `Pixels.rgb(data, width, height)`, `Pixels.rgba(data, width, height)` take `Bytes` or an `IO`, with `compress: true` for zlib. `Pixels.at(path, medium)` sends a file, temp file or shared memory name; `Pixels.temp(data)` and `Pixels.shared(data)` create one for you.
 - **Layout** is a `Term::Placement`: `id`, `x`, `y`, `width`, `height` (source rectangle), `offset_x`, `offset_y`, `columns`, `rows`, `z`, `hold_cursor`, `placeholder`, `parent`, `parent_placement`, `shift_x`, `shift_y`.
@@ -300,6 +321,7 @@ term.supports_graphics?
 - **`animate` never waits**, because terminals do not acknowledge it on success. Errors arrive as `Ack` events.
 - **Delete targets:** `Visible`, `Id`, `Number`, `Cursor`, `Frames`, `Cell`, `CellZ`, `Range`, `Column`, `Row`, `Z`. `free: true` also frees the stored data.
 - **Placeholders** are limited to 297 rows and columns.
+- **Codes.** `Term.place_code` and `Term.delete_code` take the arguments of `place` and `delete_images` and return the escape sequence instead of sending it. Use them to put a placement inside output you write yourself, such as a frame wrapped in synchronized output, where it must follow your own cursor movement. Pass `quiet: :all` (or `:ok`); nothing waits for the reply, so it would otherwise arrive as an `Ack` event.
 
 ### Desktop notifications
 
