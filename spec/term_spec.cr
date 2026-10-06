@@ -768,6 +768,8 @@ describe Term do
           rig.term.colors("foreground", "cursor", 7, "nonsense")
         end.not_nil!
         colors.keys.should eq(["foreground", "cursor", "7"])
+        colors.unknown.should eq(["nonsense"])
+        colors.size.should eq(3)
         colors["foreground"].should eq(Term::Color.new(0xffff, 0, 0))
         colors["cursor"].should be_nil
         colors["7"].should eq(Term::Color.new(0x3000, 0xa000, 0x7000))
@@ -797,7 +799,7 @@ describe Term do
 
     it "rejects values it cannot decode" do
       Term::Color.parse("").should be_nil
-      Term::Color.parse("red").should be_nil
+      Term::Color.parse("not-a-color").should be_nil
       Term::Color.parse("rgb:gg/00/00").should be_nil
       Term::Color.parse("rgb:ff/00").should be_nil
       Term::Color.parse("rgb:fffff/0/0").should be_nil
@@ -1037,24 +1039,101 @@ describe Term do
       end
     end
 
-    it "controls animations" do
+    it "controls animations without waiting, since success is not acknowledged" do
       rig do |rig|
         rig.term.animate(id: 3, current: 7).should be_nil
         rig.term.animate(id: 7, target: 3, gap: 48)
         rig.term.animate(number: 2, state: :loop, loops: 1)
-        rig.term.animate(id: 2, state: Term::Playback::Stop)
+        rig.term.animate(id: 2, state: Term::Playback::Stop, quiet: :all)
         rig.term.animate(id: 2, state: Term::Playback::Loading)
-        rig.expect("\e_Ga=a,i=3,q=2,c=7\e\\\e_Ga=a,i=7,q=2,r=3,z=48\e\\\e_Ga=a,I=2,q=2,s=3,v=1\e\\\e_Ga=a,i=2,q=2,s=1\e\\\e_Ga=a,i=2,q=2,s=2\e\\")
+        rig.expect("\e_Ga=a,i=3,c=7\e\\\e_Ga=a,i=7,r=3,z=48\e\\\e_Ga=a,I=2,s=3,v=1\e\\\e_Ga=a,i=2,q=2,s=1\e\\\e_Ga=a,i=2,s=2\e\\")
       end
     end
 
-    it "composes frames and can wait for the result" do
+    it "composes frames and returns the acknowledgement" do
       rig do |rig|
-        rig.term.compose(7, 9, id: 1, width: 23, height: 27, source_x: 4, source_y: 8, x: 1, y: 3, replace: true).should be_nil
+        rig.term.compose(7, 9, id: 1, width: 23, height: 27, source_x: 4, source_y: 8, x: 1, y: 3, replace: true, quiet: :all).should be_nil
         rig.expect("\e_Ga=c,i=1,q=2,r=7,c=9,w=23,h=27,X=4,Y=8,x=1,y=3,C=1\e\\")
-        ack = rig.ask(/\e_Ga=c,i=1,r=1,c=2\e\\/, apc("i=1;ENOENT")) { rig.term.compose(1, 2, id: 1, quiet: :none) }.not_nil!
-        ack.error.should eq("ENOENT")
+        rig.ask(/\e_Ga=c,i=1,r=1,c=2\e\\/, apc("i=1;OK")) { rig.term.compose(1, 2, id: 1) }.not_nil!.ok?.should be_true
+        rig.ask(/\e_Ga=c,i=1,r=1,c=2\e\\/, apc("i=1;ENOENT")) { rig.term.compose(1, 2, id: 1) }.not_nil!.error.should eq("ENOENT")
       end
+    end
+
+    it "delivers acknowledgements nobody is waiting for as events" do
+      rig do |rig|
+        rig.term.animate(id: 404, current: 2)
+        rig.expect("\e_Ga=a,i=404,c=2\e\\")
+        rig.feed apc("i=404;ENOENT:Animation command refers to non-existent image")
+        ack = rig.event(Term::Ack)
+        {ack.image, ack.ok?}.should eq({404, false})
+        ack.error.not_nil!.should start_with("ENOENT")
+      end
+    end
+
+    it "streams image data from an IO in bounded chunks" do
+      rig do |rig|
+        data = Bytes.new(3072 * 2) { |index| (index % 241).to_u8 }
+        rig.ask(/\e_Ga=t,i=6.*?m=0;[^\e]*\e\\/m, apc("i=6;OK")) { rig.term.image(Term::Pixels.rgb(IO::Memory.new(data), 64, 32), id: 6) }.not_nil!.ok?.should be_true
+        codes = rig.last.scan(/\e_G([^;]*);([^\e]*)\e\\/)
+        codes.map(&.[1]).should eq(["a=t,i=6,f=24,t=d,s=64,v=32,m=1", "m=0"])
+        codes.map(&.[2].bytesize).should eq([4096, 4096])
+        Base64.decode(codes.join(&.[2])).should eq(data)
+      end
+    end
+
+    it "keeps concurrent chunked uploads from interleaving" do
+      rig do |rig|
+        done = Channel(Nil).new
+        {1_u32, 2_u32}.each do |id|
+          spawn do
+            rig.term.image(Term::Pixels.rgb(Bytes.new(3072 * 5, id.to_u8), 64, 80), id: id, quiet: :all)
+            done.send(nil)
+          end
+        end
+        2.times { done.receive }
+        rig.term.print "END"
+        rig.expect("END")
+        heads = rig.seen.scan(/\e_G([^;]*);(.)/).map { |match| {match[1], match[2]} }
+        heads.size.should eq(10)
+        heads.each_slice(5) do |group|
+          group.first[0].should start_with("a=t,i=")
+          group[1..].map(&.[0]).should eq(["q=2,m=1", "q=2,m=1", "q=2,m=1", "q=2,m=0"])
+          group.map(&.[1]).uniq.size.should eq(1)
+        end
+      end
+    end
+
+    it "writes temporary files and shared memory objects for local transmission" do
+      data = Bytes[1, 2, 3, 4, 5]
+      temp = Term::Pixels.temp(data, :rgb, 1, 1)
+      path = String.new(temp.data.as(Bytes))
+      begin
+        temp.medium.should eq(Term::Medium::TempFile)
+        path.should contain("tty-graphics-protocol")
+        path.should start_with(Dir.tempdir)
+        File.read(path).to_slice.should eq(data)
+      ensure
+        File.delete?(path)
+      end
+      {% if flag?(:linux) %}
+        shared = Term::Pixels.shared(data, :rgba, 1, 1)
+        name = String.new(shared.data.as(Bytes))
+        begin
+          shared.medium.should eq(Term::Medium::SharedMemory)
+          name.should match(/\A\/[^\/]+\z/)
+          File.read("/dev/shm#{name}").to_slice.should eq(data)
+        ensure
+          File.delete?("/dev/shm#{name}")
+        end
+      {% end %}
+    end
+
+    it "builds compact placeholder rows that rely on inheritance" do
+      Term.placeholder(42, 3, 2, compact: true).should eq([
+        "\e[38;2;0;0;42m\u{10EEEE}\u0305\u{10EEEE}\u{10EEEE}\e[39m",
+        "\e[38;2;0;0;42m\u{10EEEE}\u030D\u{10EEEE}\u{10EEEE}\e[39m",
+      ])
+      Term.placeholder(33554474, 2, 1, compact: true).should eq(["\e[38;2;0;0;42m\u{10EEEE}\u0305\u0305\u030E\u{10EEEE}\e[39m"])
     end
 
     it "detects support when the query is answered before device attributes" do
@@ -1728,6 +1807,391 @@ describe Term do
       output, status = child("exit") { }
       output.should eq(SETUP + "\e]72;t=a\e\\READY\e]72;t=A\e\\" + TEARDOWN)
       status.exit_code.should eq(3)
+    end
+  end
+
+  describe "event delivery" do
+    it "keeps answering queries while the consumer is not reading events" do
+      config = plain
+      config.event_buffer = 2
+      rig(config) do |rig|
+        rig.feed "\e[<35;1;1M" * 3000
+        window = rig.ask(/\e\[14t/, "\e[4;600;800t") { rig.term.window_size }
+        window.should eq(Term::Size.new(800, 600))
+        Array.new(3000) { rig.event(Term::Mouse) }.size.should eq(3000)
+      end
+    end
+
+    it "drops the oldest events once the backlog limit is reached" do
+      config = plain
+      config.event_buffer = 1
+      config.event_backlog = 10
+      rig(config) do |rig|
+        rig.feed (1..200).join { |x| "\e[I" }
+        rig.feed "\e[O"
+        rig.ask(/\e\[14t/, "\e[4;1;1t") { rig.term.window_size }
+        sleep 50.milliseconds
+        events = rig.upto { |event| event.is_a?(Term::Focus) && !event.gained }
+        events.size.should be <= 12
+      end
+    end
+  end
+
+  describe "keyboard extras" do
+    it "reports lock toggles from transitions in the lock bits" do
+      rig do |rig|
+        rig.feed "\e[97;1u\e[97;1:3u\e[98;65u\e[98;65:3u\e[99;193u\e[99;129:3u#{tap('q')}"
+        events = rig.upto { |event| marker?(event, 'q') }
+        locks  = events.compact_map(&.as?(Term::Lock)).map { |lock| {lock.lock, lock.active} }
+        locks.should eq([
+          {Term::Mods::CapsLock, true},
+          {Term::Mods::NumLock,  true},
+          {Term::Mods::CapsLock, false},
+          {Term::Mods::NumLock,  false},
+        ])
+      end
+    end
+
+    it "classifies every key event as text input or a key command" do
+      rig do |rig|
+        rig.feed "\e[97;1;97u\e[97;1:3u\e[97;5;97u\e[57350u#{tap('q')}"
+        events = rig.upto { |event| marker?(event, 'q') }
+        events.compact_map(&.as?(Term::TextInput)).map(&.text).should eq(["a"])
+        commands = events.compact_map(&.as?(Term::KeyCommand)).map { |command| {command.key.code, command.key.action} }
+        commands.first(3).should eq([
+          {97,    Term::Key::Action::Release},
+          {97,    Term::Key::Action::Press},
+          {57350, Term::Key::Action::Press},
+        ])
+      end
+    end
+
+    it "emits a multi-tap event after every tap" do
+      rig do |rig|
+        rig.feed tap('a') + tap('a') + tap('b')
+        events = rig.upto { |event| marker?(event, 'b') }
+        multi  = events.compact_map(&.as?(Term::KeyGesture)).select(&.kind.multi_tap?)
+        multi.map { |gesture| {gesture.key.code, gesture.count} }.should eq([{97, 1}, {97, 2}, {98, 1}])
+      end
+    end
+  end
+
+  describe "mouse extras" do
+    it "keeps a hover dwell alive while the pointer stays inside the radius" do
+      config = plain
+      config.hover_dwell_after = 20.milliseconds
+      config.hover_radius = 6
+      rig(config) do |rig|
+        rig.feed "\e[<35;50;50M"
+        rig.event(Term::MouseGesture, &.kind.hover_dwell?)
+        rig.feed "\e[<35;53;52M\e[<35;48;47M#{tap('q')}"
+        events = rig.upto { |event| marker?(event, 'q') }
+        gestures(events).should_not contain(Term::MouseGesture::Kind::HoverEnd)
+        rig.feed "\e[<35;60;50M"
+        rig.event(Term::MouseGesture, &.kind.hover_end?).mouse.x.should eq(60)
+      end
+    end
+
+    it "reports a leave at the last valid position instead of the placeholder origin" do
+      rig do |rig|
+        rig.feed "\e[48;10;20;200;400t\e[<35;45;65M\e[<256;0;0M"
+        rig.event(Term::Mouse)
+        leave = rig.event(Term::Mouse)
+        {leave.action, leave.x, leave.y, leave.col, leave.row}.should eq({Term::Mouse::Action::Leave, 45, 65, 2, 3})
+      end
+    end
+  end
+
+  describe "clipboard extras" do
+    it "uses the configured request id and rejects an invalid one" do
+      config = plain
+      config.clipboard_id = "pane-7"
+      rig(config) do |rig|
+        reply = osc("5522;type=read:status=OK:id=pane-7") + osc("5522;type=read:status=DATA:id=pane-7:mime=#{b64("text/plain")};#{b64("hi")}") + osc("5522;type=read:status=DONE:id=pane-7")
+        rig.ask(/\e\]5522;type=read:id=pane-7;/, reply) { rig.term.clipboard_read("text/plain") }.not_nil!.text.should eq("hi")
+      end
+      bad = plain
+      bad.clipboard_id = "no:colons"
+      reader, _feed = IO.pipe
+      _screen, writer = IO.pipe
+      expect_raises(ArgumentError) { Term.new(bad, reader, writer) }
+    end
+
+    it "treats an id-less reply as its own when a read is pending" do
+      rig do |rig|
+        reply = osc("5522;type=read:status=OK") + osc("5522;type=read:status=DATA:mime=#{b64("text/plain")};#{b64("hi")}") + osc("5522;type=read:status=DONE")
+        rig.ask(/\e\]5522;type=read:id=term;/, reply) { rig.term.clipboard_read("text/plain") }.not_nil!.text.should eq("hi")
+      end
+    end
+
+    it "retries reads and writes that report EBUSY" do
+      config = plain
+      config.busy_delay = 5.milliseconds
+      rig(config) do |rig|
+        result = Channel(Term::Status?).new(1)
+        spawn { result.send(rig.term.copy("x")) }
+        rig.expect(/type=wdata\e\\/)
+        rig.feed osc("5522;type=write:status=EBUSY")
+        rig.expect(/type=wdata\e\\/)
+        rig.feed osc("5522;type=write:status=DONE")
+        result.receive.should eq(Term::Status::Done)
+        read = Channel(Term::Clipboard?).new(1)
+        spawn { read.send(rig.term.clipboard_read("text/plain")) }
+        rig.expect(/type=read:id=term;[^\e]*\e\\/)
+        rig.feed osc("5522;type=read:status=EBUSY:id=term")
+        rig.expect(/type=read:id=term;[^\e]*\e\\/)
+        rig.feed osc("5522;type=read:status=OK:id=term") + osc("5522;type=read:status=DONE:id=term")
+        read.receive.not_nil!.done?.should be_true
+      end
+    end
+
+    it "gives up after the configured number of busy retries" do
+      config = plain
+      config.busy_delay = 1.millisecond
+      config.busy_retries = 2
+      rig(config) do |rig|
+        result = Channel(Term::Status?).new(1)
+        spawn { result.send(rig.term.copy("x")) }
+        3.times do
+          rig.expect(/type=wdata\e\\/)
+          rig.feed osc("5522;type=write:status=EBUSY")
+        end
+        result.receive.should eq(Term::Status::EBUSY)
+      end
+    end
+
+    it "streams a write from an IO and a read into an IO" do
+      rig do |rig|
+        data = Bytes.new(9000) { |index| (index % 239).to_u8 }
+        rig.ask(/\e\]5522;type=wdata\e\\/, osc("5522;type=write:status=DONE")) do
+          rig.term.clipboard_write({"application/octet-stream" => IO::Memory.new(data)})
+        end.should eq(Term::Status::Done)
+        chunks = rig.seen.scan(/\e\]5522;type=wdata:mime=[^;]+;([^\e]*)\e\\/).map { |match| Base64.decode(match[1]) }
+        chunks.map(&.size).should eq([4095, 4095, 810])
+        chunks.reduce(Bytes.empty) { |all, chunk| all + chunk }.should eq(data)
+        sink = IO::Memory.new
+        reply = osc("5522;type=read:status=OK:id=term") +
+                osc("5522;type=read:status=DATA:id=term:mime=#{b64("image/png")};#{b64(data[0, 4096])}") +
+                osc("5522;type=read:status=DATA:id=term:mime=#{b64("image/png")};#{b64(data[4096..])}") +
+                osc("5522;type=read:status=DONE:id=term")
+        clipboard = rig.ask(/type=read:id=term;/, reply) { rig.term.clipboard_read("image/png", into: sink) }.not_nil!
+        clipboard.done?.should be_true
+        clipboard.data.should be_empty
+        sink.to_slice.should eq(data)
+      end
+    end
+  end
+
+  describe "color extras" do
+    it "parses named colors case-insensitively and with spaces" do
+      Term::Color.parse("red").should eq(Term::Color.new(0xffff, 0, 0))
+      Term::Color.parse("Alice Blue").should eq(Term::Color.rgb(240, 248, 255))
+      Term::Color.parse("DARKSLATEGRAY4@0.5").should eq(Term::Color.rgb(82, 139, 139, 0.5))
+      Term::NAMES.size.should be > 600
+    end
+
+    it "sets a color and confirms it in one escape code" do
+      rig do |rig|
+        color = rig.ask(/\e\]21;foreground=white;foreground=\?\e\\/, osc("21;foreground=white")) { rig.term.confirm_color("foreground", "white") }
+        color.should eq(Term::Color.new(0xffff, 0xffff, 0xffff))
+        rig.ask(/\e\]21;9=#102030;9=\?\e\\/, osc("21;unknown=OQ")) { rig.term.confirm_color(9, "#102030") }.should be_nil
+      end
+    end
+  end
+
+  describe "notification extras" do
+    it "rejects identifiers outside the allowed character set" do
+      rig do |rig|
+        expect_raises(ArgumentError) { rig.term.notify("x", id: "bad;id") }
+        expect_raises(ArgumentError) { rig.term.notify("x", icon_key: "a:b") }
+        expect_raises(ArgumentError) { rig.term.close_notification("\e]0") }
+        rig.term.notify("x", id: "ok_id-1+2.3")
+        rig.expect("\e]99;i=ok_id-1+2.3:e=1;eA==\e\\")
+      end
+    end
+
+    it "transmits cached icon data only once per key" do
+      rig do |rig|
+        rig.term.notify("a", id: "one", icon: Bytes[1, 2, 3], icon_key: "k")
+        rig.term.notify("b", id: "two", icon: Bytes[1, 2, 3], icon_key: "k")
+        rig.term.notify("c", id: "three", icon: Bytes[4], icon_key: "other")
+        rig.expect("\e]99;i=one:g=k:e=1:d=0;YQ==\e\\\e]99;i=one:p=icon:e=1:g=k;AQID\e\\" \
+                   "\e]99;i=two:g=k:e=1;Yg==\e\\" \
+                   "\e]99;i=three:g=other:e=1:d=0;Yw==\e\\\e]99;i=three:p=icon:e=1:g=other;BA==\e\\")
+      end
+    end
+  end
+
+  describe "drag and drop extras" do
+    it "returns the feature flags from the support query" do
+      rig do |rig|
+        rig.ask(/\e\]72;t=q\e\\\e\[c/, osc("72;t=q;future=1:other=x") + DA1) { rig.term.dnd_support }.should eq({"future" => "1", "other" => "x"})
+        rig.ask(/\e\]72;t=q\e\\\e\[c/, osc("72;t=q;") + DA1) { rig.term.dnd_support }.should eq({} of String => String)
+        rig.ask(/\e\]72;t=q\e\\\e\[c/, DA1) { rig.term.dnd_support }.should be_nil
+      end
+    end
+
+    it "streams dropped data into an IO" do
+      rig do |rig|
+        data    = Bytes.new(7000) { |index| (index % 233).to_u8 }
+        encoded = b64(data).rstrip('=')
+        reply   = osc("72;t=r:x=1:m=1;#{encoded[0, 4095]}") + osc("72;t=r:x=1:m=1;#{encoded[4095, 4095]}") + osc("72;t=r:x=1:m=1;#{encoded[8190..]}") + osc("72;t=r:x=1;")
+        sink    = IO::Memory.new
+        dropped = rig.ask(/\e\]72;t=r:x=1\e\\/, reply) { rig.term.drop_data(1, into: sink) }.not_nil!
+        dropped.ok?.should be_true
+        dropped.data.should be_empty
+        sink.to_slice.should eq(data)
+      end
+    end
+
+    it "streams outgoing data from an IO and never interleaves two streams" do
+      rig do |rig|
+        done = Channel(Nil).new
+        {1, 2}.each do |index|
+          spawn do
+            rig.term.drag_data(index, IO::Memory.new(Bytes.new(3072 * 4, index.to_u8)))
+            done.send(nil)
+          end
+        end
+        2.times { done.receive }
+        rig.term.print "END"
+        rig.expect("END")
+        order = rig.seen.scan(/\e\]72;t=e:y=(\d):m=(\d)/).map { |match| {match[1], match[2]} }
+        order.size.should eq(10)
+        order.each_slice(5) do |group|
+          group.map(&.[0]).uniq.size.should eq(1)
+          group.map(&.[1]).should eq(["1", "1", "1", "1", "0"])
+        end
+      end
+    end
+
+    it "saves a remote directory tree to disk" do
+      root = File.tempname("term-drop")
+      begin
+        rig do |rig|
+          result = Channel(Bool).new(1)
+          spawn { result.send(rig.term.drop_save(1, 2, root)) }
+          rig.expect("\e]72;t=r:x=1:y=2\e\\")
+          rig.feed osc("72;t=r:x=1:y=2:X=7;#{b64("a.txt\0link\0sub")}")
+          rig.expect("\e]72;t=r:Y=7:x=1\e\\")
+          rig.feed osc("72;t=r:Y=7:x=1:m=1;#{b64("hello")}") + osc("72;t=r:Y=7:x=1;")
+          rig.expect("\e]72;t=r:Y=7:x=2\e\\")
+          rig.feed osc("72;t=r:Y=7:x=2:X=1;#{b64("a.txt")}")
+          rig.expect("\e]72;t=r:Y=7:x=3\e\\")
+          rig.feed osc("72;t=r:Y=7:x=3:X=8;#{b64("b.txt")}")
+          rig.expect("\e]72;t=r:Y=8:x=1\e\\")
+          rig.feed osc("72;t=r:Y=8:x=1;#{b64("deep")}")
+          rig.expect("\e]72;t=r:Y=8\e\\\e]72;t=r:Y=7\e\\")
+          result.receive.should be_true
+        end
+        File.read(File.join(root, "a.txt")).should eq("hello")
+        File.readlink(File.join(root, "link")).should eq("a.txt")
+        File.read(File.join(root, "sub", "b.txt")).should eq("deep")
+      ensure
+        FileUtils.rm_rf(root)
+      end
+    end
+
+    it "refuses entry names that would escape the destination" do
+      root = File.tempname("term-drop")
+      begin
+        rig do |rig|
+          result = Channel(Bool).new(1)
+          spawn { result.send(rig.term.drop_save(1, 1, root)) }
+          rig.expect("\e]72;t=r:x=1:y=1\e\\")
+          rig.feed osc("72;t=r:x=1:y=1:X=7;#{b64("../evil")}")
+          rig.expect("\e]72;t=r:Y=7\e\\")
+          result.receive.should be_false
+        end
+        File.exists?(root + "/../evil").should be_false
+        Dir.children(root).should be_empty
+      ensure
+        FileUtils.rm_rf(root)
+      end
+    end
+
+    it "reports a failed save and leaves nothing behind" do
+      root = File.tempname("term-drop")
+      rig do |rig|
+        rig.ask(/\e\]72;t=r:x=1:y=1\e\\/, osc("72;t=R:x=1:y=1;EPERM")) { rig.term.drop_save(1, 1, root) }.should be_false
+      end
+      File.exists?(root).should be_false
+    end
+
+    it "builds a uri-list and answers the terminal's file requests in order" do
+      root = File.tempname("term-drag")
+      Dir.mkdir_p(File.join(root, "dir with space"))
+      File.write(File.join(root, "a.txt"), "hello")
+      File.write(File.join(root, "dir with space", "b.txt"), "deep")
+      begin
+        rig do |rig|
+          list = rig.term.drag_files([File.join(root, "a.txt"), File.join(root, "dir with space")])
+          list.should eq("file://#{root}/a.txt\r\nfile://#{root}/dir%20with%20space/\r\n")
+          rig.feed osc("72;t=k:x=2") + osc("72;t=k:x=1") + osc("72;t=k:x=9")
+          rig.expect("\e]72;t=E;ENOENT\e\\")
+          heads = rig.seen.scan(/\e\]72;([^;\e]*);([^\e]*)\e\\/).map { |match| {match[1], match[1].ends_with?("m=1") ? Base64.decode_string(match[2]) : match[2]} }
+          heads.should eq([
+            {"t=k:x=2:X=2:m=1",     "b.txt"},
+            {"t=k:x=2:Y=2:y=1:m=1", "deep"},
+            {"t=k:x=1:m=1",         "hello"},
+            {"t=E",                 "ENOENT"},
+          ])
+          Array.new(3) { rig.event(Term::Drag).index }.should eq([2, 1, 9])
+        end
+      ensure
+        FileUtils.rm_rf(root)
+      end
+    end
+
+    it "leaves file requests to the application when no files are registered" do
+      rig do |rig|
+        rig.feed osc("72;t=k:x=1")
+        rig.event(Term::Drag).kind.should eq(Term::Drag::Kind::FileRequest)
+        rig.term.print "END"
+        rig.expect("END")
+        rig.seen.should eq("END")
+      end
+    end
+
+    it "aborts with EINVAL when asked to send something that is not a file, link or directory" do
+      rig do |rig|
+        rig.term.drag_path(1, "/dev/null")
+        rig.expect("\e]72;t=E;EINVAL\e\\")
+      end
+    end
+  end
+
+  describe "suspend and resume" do
+    it "leaves and re-enters the terminal modes" do
+      reader, feed = IO.pipe
+      screen, writer = IO.pipe
+      term = Term.new(plain, reader, writer)
+      drain(screen, "\e[16t")
+      term.suspend
+      term.suspend
+      drain(screen, "\e[?1049l").should eq(TEARDOWN)
+      term.resume
+      term.resume
+      drain(screen, "\e[16t").should eq(SETUP)
+      term.refresh
+      feed.close
+      term.close
+      writer.close
+      screen.gets_to_end.should eq(TEARDOWN)
+    end
+
+    it "suspends on SIGTSTP, resumes on SIGCONT and still restores on SIGTERM" do
+      output, status = child("signal") do |process|
+        screen = process.output.as(IO::FileDescriptor)
+        process.signal(Signal::TSTP)
+        drain(screen, "\e[?1049l").should eq(TEARDOWN)
+        sleep 50.milliseconds
+        process.signal(Signal::CONT)
+        drain(screen, "\e[16t").should eq(SETUP)
+        process.signal(Signal::TERM)
+      end
+      output.should end_with("\e]72;t=A\e\\" + TEARDOWN)
+      status.exit_code.should eq(128 + Signal::TERM.value)
     end
   end
 end
