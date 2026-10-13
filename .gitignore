@@ -4,5 +4,5 @@
 /lib/
 /bin/
 /.shards/
-/shard.lock/
+shard.lock
 *.dwarf
