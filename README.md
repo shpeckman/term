@@ -21,7 +21,7 @@ On terminals that lack these protocols, `term` falls back to legacy keyboard inp
 
 - Crystal `>= 1.21.0`
 - Linux or macOS. macOS support is written but untested. Windows is not supported.
-- Depends on [`byte_builder`](https://github.com/shpeckman/byte_builder) and [`termwidth`](https://github.com/shpeckman/termwidth) (OpenSSL and zlib are linked from the standard library).
+- Depends on [`byte_builder`](https://github.com/shpeckman/byte_builder), [`termwidth`](https://github.com/shpeckman/termwidth) and [`tty`](https://github.com/shpeckman/tty) (OpenSSL and zlib are linked from the standard library).
 
 ## Installation
 
@@ -89,6 +89,8 @@ A terminal that answers nothing delays `Term.open` by `query_timeout` (1 second 
 ### Signals and job control
 
 While a `Term` is open the shard installs handlers for `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, `SIGTSTP`, `SIGCONT` and `SIGWINCH`. They replace any handlers you installed and are not removed on close. Set `config.signals = false` to keep your own, and call `Term.restore`, `Term.suspend`, `Term.resume` and `Term.refresh` from them as needed.
+
+`TTY.on_resize` and `TTY::Winsize.propagate` from the `tty` shard install their own process-wide `SIGWINCH` handler, which replaces `Term`'s. Do not use them while a `Term` with `config.signals` enabled is open.
 
 Ctrl-Z suspends the process as a shell user expects: the terminal modes are left, the process group is stopped, and the modes are re-entered on continue. The key event is still delivered. Set `config.job_control = false` to handle Ctrl-Z yourself.
 
@@ -503,37 +505,15 @@ Widths follow `Graphemes.profile`, a `TermWidth::WidthProfile` (`TermWidth::Widt
 
 ## TTY and PTY
 
-Low-level helpers, useful for tests or for driving another program on a pseudo-terminal.
-
-`TTY` is a set of functions on a file descriptor:
-
-| Function                  | Returns                                               |
-|---------------------------|-------------------------------------------------------|
-| `mode(fd)`                | `LibC::Termios?`, `nil` when `fd` is not a terminal   |
-| `apply(fd, mode)`         | `Bool`                                                |
-| `raw(mode)`, `raw?(mode)` | A raw copy; whether a mode is raw                     |
-| `window(fd)`              | `TTY::Window?` with `rows`, `cols`, `width`, `height` |
-| `resize(fd, window)`      | `Bool`                                                |
-| `signal_group(signal)`    | `Bool`                                                |
-
-`PTY` is a pseudo-terminal pair:
+Terminal modes, window sizes, process groups and pseudo-terminals come from the [`tty`](https://github.com/shpeckman/tty) shard, which `term` requires. Its `TTY` module is available as soon as you `require "term"`:
 
 ```crystal
-pty = PTY.spawn("sh", ["-c", "stty size"], window: TTY::Window.new(24, 80))
-puts pty.rest                          # "24 80\r\n"
-puts pty.process.not_nil!.wait.exit_code
-pty.close
+output, status = TTY::PTY.run("sh", ["-c", "stty size"], winsize: TTY::Winsize.new(24_u16, 80_u16))
+output             # "24 80\n"
+status.exit_code   # 0
 ```
 
-| Member                                  | Meaning                                                                                                       |
-|-----------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `PTY.open(window = nil)`                | A pair with `master`, `slave` and `name`                                                                      |
-| `PTY.spawn(command, args, env, window)` | Runs a command on its own session with the PTY as its controlling terminal; `process` is a standard `Process` |
-| `window`, `window=`                     | The terminal size; changing it notifies the child                                                             |
-| `mode`, `mode=`                         | The terminal settings                                                                                         |
-| `<<(text)`                              | Write to the master                                                                                           |
-| `rest`                                  | Read until the child hangs up                                                                                 |
-| `close`                                 |                                                                                                               |
+`Term` uses it for the raw mode it enters on open and restores on close, the window size it reads at startup and on `refresh`, and the process-group stop behind Ctrl-Z. Failures in those calls are ignored, as when the terminal is already gone at exit.
 
 ## Limitations
 
@@ -543,7 +523,6 @@ pty.close
 - **`drop_save` trusts the terminal.** It creates symlinks with the target it is given, overwrites existing files, and leaves a partial tree behind on failure.
 - **No multiplexer passthrough.** Under tmux the kitty protocols are not wrapped and will be swallowed.
 - **Some data is held in memory:** compressed image data, notification icons, and clipboard reads and dropped data when no `into:` sink is given.
-- **`PTY.spawn` uses an undocumented Crystal API** to adopt the forked child, which may change between Crystal releases.
 
 ## Development
 

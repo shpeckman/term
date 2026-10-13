@@ -14,3 +14,5 @@ dependencies:
     github: shpeckman/termwidth
   byte_builder:
     github: shpeckman/byte_builder
+  tty:
+    github: shpeckman/tty

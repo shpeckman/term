@@ -99,28 +99,37 @@ private def await(term : Term, type : T.class) : T forall T
   end
 end
 
+private def window(rows : Int32, cols : Int32, width : Int32 = 0, height : Int32 = 0) : TTY::Winsize
+  TTY::Winsize.new(rows.to_u16, cols.to_u16, width.to_u16, height.to_u16)
+end
+
+private def raw?(mode : TTY::Termios) : Bool
+  !mode.canonical? && !mode.echo? && !mode.signals? && !mode.output.includes?(TTY::OutputFlag::OPost)
+end
+
 private class Console
-  getter pty  : PTY
+  getter pty  : TTY::PTY
   getter term : Term
 
-  def initialize(config : Term::Config = plain, window : TTY::Window? = nil, & : PTY ->)
-    @pty = PTY.open(window)
+  def initialize(config : Term::Config = plain, size : TTY::Winsize? = nil, & : TTY::PTY ->)
+    @pty = TTY::PTY.open
+    size.try { |value| @pty.winsize = value }
     yield @pty
-    slave = @pty.slave.not_nil!
+    slave = @pty.slave_io
     config.job_control = false
     @term = Term.new(config, slave, slave)
   end
 
   def feed(text : String) : Nil
-    @pty << text
+    @pty.io << text
   end
 
   def expect(needle : String) : String
-    drain(@pty.master, needle)
+    drain(@pty.io, needle)
   end
 
-  def mode : LibC::Termios
-    @pty.mode.not_nil!
+  def mode : TTY::Termios
+    @pty.termios
   end
 
   def close : Nil
@@ -129,8 +138,8 @@ private class Console
   end
 end
 
-private def console(config : Term::Config = plain, window : TTY::Window? = nil, prepare : PTY -> = ->(_pty : PTY) { }, & : Console ->) : Nil
-  console = Console.new(config, window) { |pty| prepare.call(pty) }
+private def console(config : Term::Config = plain, size : TTY::Winsize? = nil, prepare : TTY::PTY -> = ->(_pty : TTY::PTY) { }, & : Console ->) : Nil
+  console = Console.new(config, size) { |pty| prepare.call(pty) }
   begin
     yield console
   ensure
@@ -138,11 +147,7 @@ private def console(config : Term::Config = plain, window : TTY::Window? = nil, 
   end
 end
 
-private def settings(mode : LibC::Termios)
-  {mode.c_iflag, mode.c_oflag, mode.c_cflag, mode.c_lflag, mode.c_cc.to_a}
-end
-
-private def stopped?(process : Process, expected : Bool) : Bool
+private def stopped?(process : TTY::PTY::Process, expected : Bool) : Bool
   200.times do
     state = File.read("/proc/#{process.pid}/stat").rpartition(')')[2].split.first
     return true if (state == "T") == expected
@@ -151,18 +156,26 @@ private def stopped?(process : Process, expected : Bool) : Bool
   false
 end
 
-private def child(scenario : String, & : PTY, Process ->) : {String, Process::Status}
-  window  = TTY::Window.new(30, 100, 1000, 600)
-  pty     = PTY.spawn(Process.executable_path.not_nil!, env: {"TERM_SPEC_CHILD" => scenario}, window: window)
-  process = pty.process.not_nil!
+private def reap(process : TTY::PTY::Process) : Nil
+  unless process.exited?
+    begin
+      process.kill
+    rescue TTY::Error
+    end
+    process.wait
+  end
+  process.close
+end
+
+private def child(scenario : String, & : TTY::PTY::Process ->) : {String, TTY::ChildStatus}
+  process = TTY::PTY.spawn(Process.executable_path.not_nil!, env: {"TERM_SPEC_CHILD" => scenario}, winsize: window(30, 100, 1000, 600))
   begin
-    drain(pty.master, "READY")
-    yield pty, process
-    pty.master.read_timeout = 5.seconds
-    {pty.rest, process.wait}
+    drain(process.io, "READY")
+    yield process
+    process.io.read_timeout = 5.seconds
+    {process.io.gets_to_end, process.wait}
   ensure
-    process.signal(Signal::KILL) unless process.terminated?
-    pty.close
+    reap(process)
   end
 end
 
@@ -2462,24 +2475,24 @@ describe Term do
   describe "on a real terminal" do
     it "enters raw mode on open and restores the exact original settings on close" do
       original = nil
-      prepare = ->(pty : PTY) do
-        custom = pty.mode.not_nil!
-        custom.c_lflag &= ~LibC::ECHO
-        custom.c_cc[LibC::VMIN] = 3_u8
-        pty.mode = custom
-        original = pty.mode
+      prepare = ->(pty : TTY::PTY) do
+        custom = pty.termios
+        custom.echo = false
+        custom[TTY::ControlChar::Min] = 3_u8
+        pty.termios = custom
+        original = pty.termios
         nil
       end
       console(prepare: prepare) do |console|
         console.expect("\e[16t").should eq(SETUP)
-        TTY.raw?(console.mode).should be_true
+        raw?(console.mode).should be_true
         console.term.close
         console.expect("\e[?1049l").should eq(TEARDOWN)
         restored = console.mode
-        settings(restored).should eq(settings(original.not_nil!))
-        (restored.c_lflag & LibC::ICANON).should_not eq(0)
-        (restored.c_lflag & LibC::ECHO).should eq(0)
-        restored.c_cc[LibC::VMIN].should eq(3_u8)
+        restored.should eq(original.not_nil!)
+        restored.canonical?.should be_true
+        restored.echo?.should be_false
+        restored[TTY::ControlChar::Min].should eq(3_u8)
       end
     end
 
@@ -2501,18 +2514,18 @@ describe Term do
         console.expect("\e[16t")
         console.term.suspend
         console.expect("\e[?1049l").should eq(TEARDOWN)
-        TTY.raw?(console.mode).should be_false
+        raw?(console.mode).should be_false
         console.term.resume
         console.expect("\e[16t").should eq(SETUP)
-        TTY.raw?(console.mode).should be_true
+        raw?(console.mode).should be_true
         Term.restore
         console.expect("\e[?1049l").should eq(TEARDOWN)
-        TTY.raw?(console.mode).should be_false
+        raw?(console.mode).should be_false
       end
     end
 
     it "reads the cell size from the terminal at startup" do
-      console(window: TTY::Window.new(30, 100, 1000, 600)) do |console|
+      console(size: window(30, 100, 1000, 600)) do |console|
         console.expect("\e[16t")
         console.feed "\e[<0;45;65M"
         mouse = await(console.term, Term::Mouse)
@@ -2524,13 +2537,13 @@ describe Term do
       config = Term::Config.new
       config.signals = false
       config.query_timeout = 60.milliseconds
-      console(config, TTY::Window.new(30, 100, 1000, 600)) do |console|
+      console(config, window(30, 100, 1000, 600)) do |console|
         console.term.features.should eq(Term::Feature::None)
         console.expect("\e[16t")
         console.feed "\e[<0;5;3M"
         mouse = await(console.term, Term::Mouse)
         {mouse.col, mouse.row, mouse.x, mouse.y}.should eq({4, 2, 40, 40})
-        console.pty.window = TTY::Window.new(40, 120, 1200, 800)
+        console.pty.winsize = window(40, 120, 1200, 800)
         console.term.refresh
         resize = await(console.term, Term::Resize)
         {resize.rows, resize.cols, resize.width, resize.height}.should eq({40, 120, 1200, 800})
@@ -2538,7 +2551,7 @@ describe Term do
     end
 
     it "does nothing on refresh when the terminal reports resizes itself" do
-      console(window: TTY::Window.new(30, 100, 1000, 600)) do |console|
+      console(size: window(30, 100, 1000, 600)) do |console|
         console.expect("\e[16t")
         console.term.refresh
         console.feed "\e[I"
@@ -2658,85 +2671,11 @@ describe Term do
     end
   end
 
-  describe TTY do
-    it "reports nothing for a descriptor that is not a terminal" do
-      reader, writer = IO.pipe
-      TTY.mode(reader.fd).should be_nil
-      TTY.window(writer.fd).should be_nil
-      TTY.resize(writer.fd, TTY::Window.new(1, 1)).should be_false
-    end
-
-    it "builds a raw mode without touching the original" do
-      pty = PTY.open
-      begin
-        original = pty.mode.not_nil!
-        raw      = TTY.raw(original)
-        TTY.raw?(original).should be_false
-        TTY.raw?(raw).should be_true
-        raw.c_cc[LibC::VMIN].should eq(1_u8)
-      ensure
-        pty.close
-      end
-    end
-  end
-
-  describe PTY do
-    it "opens a pair whose ends are connected terminals" do
-      pty = PTY.open(TTY::Window.new(24, 80, 800, 480))
-      begin
-        slave = pty.slave.not_nil!
-        slave.tty?.should be_true
-        pty.name.should start_with("/dev/")
-        pty.window.should eq(TTY::Window.new(24, 80, 800, 480))
-        TTY.window(slave.fd).should eq(pty.window)
-        pty.mode = TTY.raw(pty.mode.not_nil!)
-        pty << "ping"
-        bytes = Bytes.new(4)
-        slave.read_fully(bytes)
-        String.new(bytes).should eq("ping")
-        slave << "pong"
-        slave.flush
-        drain(pty.master, "pong").should eq("pong")
-      ensure
-        pty.close
-      end
-    end
-
-    it "runs a command on its own terminal and reports its exit status" do
-      pty = PTY.spawn("sh", ["-c", "test -t 0 && stty size && echo $TERM_PTY_SPEC && exit 7"], env: {"TERM_PTY_SPEC" => "marker"}, window: TTY::Window.new(12, 34))
-      begin
-        pty.slave.should be_nil
-        pty.rest.should eq("12 34\r\nmarker\r\n")
-        pty.process.not_nil!.wait.exit_code.should eq(7)
-      ensure
-        pty.close
-      end
-    end
-
-    it "makes the child a session leader with the terminal as its controlling terminal" do
-      pty = PTY.spawn("sh", ["-c", "ps -o pid=,sid=,tty= -p $$; echo ready; exec sleep 5"])
-      begin
-        fields = drain(pty.master, "ready\r\n").split
-        fields[0].should eq(fields[1])
-        fields[0].to_i.should eq(pty.process.not_nil!.pid)
-        pty.name.should end_with(fields[2])
-        pty << "\u0003"
-        pty.process.not_nil!.wait.exit_reason.should eq(Process::ExitReason::Interrupted)
-      ensure
-        pty.close
-      end
-    end
-
-    it "raises for a command that does not exist" do
-      expect_raises(IO::Error, "command not found") { PTY.spawn("term-spec-no-such-command") }
-    end
-  end
-
   describe "as a child process on a terminal" do
     it "restores the terminal when terminated by a signal" do
-      rest, status = child("signal") do |pty, process|
-        TTY.raw?(pty.mode.not_nil!).should be_true
-        process.signal(Signal::TERM)
+      rest, status = child("signal") do |process|
+        raw?(process.pty.termios).should be_true
+        process.terminate
       end
       rest.should end_with("\e]72;t=A\e\\" + TEARDOWN)
       status.exit_code.should eq(128 + Signal::TERM.value)
@@ -2749,16 +2688,16 @@ describe Term do
     end
 
     it "suspends on SIGTSTP with the terminal cooked and resumes raw on SIGCONT" do
-      rest, status = child("signal") do |pty, process|
+      rest, status = child("signal") do |process|
         process.signal(Signal::TSTP)
-        drain(pty.master, "\e[?1049l").should eq(TEARDOWN)
+        drain(process.io, "\e[?1049l").should eq(TEARDOWN)
         stopped?(process, true).should be_true
-        TTY.raw?(pty.mode.not_nil!).should be_false
+        raw?(process.pty.termios).should be_false
         process.signal(Signal::CONT)
-        drain(pty.master, "1000x600").should eq(SETUP + "SIZE 30x100 1000x600")
+        drain(process.io, "1000x600").should eq(SETUP + "SIZE 30x100 1000x600")
         stopped?(process, false).should be_true
-        TTY.raw?(pty.mode.not_nil!).should be_true
-        process.signal(Signal::TERM)
+        raw?(process.pty.termios).should be_true
+        process.terminate
       end
       rest.should end_with(TEARDOWN)
       status.exit_code.should eq(128 + Signal::TERM.value)
@@ -2766,25 +2705,25 @@ describe Term do
 
     it "stops itself on Ctrl-Z and comes back on continue" do
       {"signal", "unhooked"}.each do |scenario|
-        child(scenario) do |pty, process|
-          pty << "\u001a"
-          drain(pty.master, "\e[?1049l").should eq(TEARDOWN)
+        child(scenario) do |process|
+          process.io << "\u001a"
+          drain(process.io, "\e[?1049l").should eq(TEARDOWN)
           stopped?(process, true).should be_true
-          TTY.raw?(pty.mode.not_nil!).should be_false
+          raw?(process.pty.termios).should be_false
           process.signal(Signal::CONT)
-          drain(pty.master, "1000x600").should eq(SETUP + "SIZE 30x100 1000x600")
+          drain(process.io, "1000x600").should eq(SETUP + "SIZE 30x100 1000x600")
           stopped?(process, false).should be_true
-          TTY.raw?(pty.mode.not_nil!).should be_true
-          process.signal(Signal::KILL)
+          raw?(process.pty.termios).should be_true
+          process.kill
         end
       end
     end
 
     it "turns a window size change into a resize event" do
-      child("bare") do |pty, process|
-        pty.window = TTY::Window.new(40, 120, 1200, 800)
-        drain(pty.master, "800").should end_with("SIZE 40x120 1200x800")
-        process.signal(Signal::KILL)
+      child("bare") do |process|
+        process.pty.winsize = window(40, 120, 1200, 800)
+        drain(process.io, "800").should end_with("SIZE 40x120 1200x800")
+        process.kill
       end
     end
   end

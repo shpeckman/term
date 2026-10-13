@@ -8,8 +8,7 @@ require "sync/exclusive"
 require "uri"
 require "byte_builder"
 require "termwidth"
-require "./term/tty"
-require "./term/pty"
+require "tty"
 
 class Term
   ST          = "\e\\"
@@ -1094,7 +1093,7 @@ class Term
   @cell_width  = Atomic(Int32).new(0)
   @cell_height = Atomic(Int32).new(0)
   @setup       = ""
-  @saved : LibC::Termios?
+  @saved : TTY::Termios?
   @suspended = Atomic(Bool).new(false)
   @mutexes : Array(Sync::Mutex)
   @wire    = Sync::Mutex.new
@@ -1165,7 +1164,7 @@ class Term
     end
     screen    = @config.alternate_screen ? SCREEN : {"", ""}
     @teardown = @config.leave + screen[1]
-    @saved    = TTY.mode(@input.fd) if @input.tty?
+    @saved    = capture
     raw
     @input.read_timeout = POLL
     measure
@@ -1204,30 +1203,47 @@ class Term
     {% end %}
   end
 
+  private def capture : TTY::Termios?
+    TTY::Termios.get(@input) if @input.tty?
+  rescue TTY::Error
+  end
+
   private def measure : Resize?
-    size = TTY.window(@io.fd) || return
-    return unless size.cols > 0 && size.rows > 0
-    @cell_width.set(size.width // size.cols) if size.width > 0
-    @cell_height.set(size.height // size.rows) if size.height > 0
-    Resize.new(size.rows, size.cols, size.height, size.width)
+    size   = TTY::Winsize.get(@io)
+    rows   = size.rows.to_i
+    cols   = size.cols.to_i
+    width  = size.xpixel.to_i
+    height = size.ypixel.to_i
+    return unless cols > 0 && rows > 0
+    @cell_width.set(width // cols) if width > 0
+    @cell_height.set(height // rows) if height > 0
+    Resize.new(rows, cols, height, width)
+  rescue TTY::Error
   end
 
   private def raw : Nil
-    @saved.try { |mode| TTY.apply(@input.fd, TTY.raw(mode)) }
+    @saved.try(&.raw.set(@input))
+  rescue TTY::Error
   end
 
   private def cooked : Nil
-    @saved.try { |mode| TTY.apply(@input.fd, mode) }
+    @saved.try(&.set(@input))
+  rescue TTY::Error
   end
 
   private def park : Nil
     if @@hooked.get
-      TTY.signal_group(Signal::TSTP)
+      signal_group(Signal::TSTP)
     else
       suspend
-      TTY.signal_group(Signal::STOP)
+      signal_group(Signal::STOP)
       resume
     end
+  end
+
+  private def signal_group(signal : Signal) : Nil
+    TTY::Session.signal_process_group(0, signal)
+  rescue TTY::Error
   end
 
   def refresh : Nil
