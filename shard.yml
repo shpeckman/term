@@ -1,6 +1,6 @@
 # shard.yml
 name: term
-version: 0.12.0
+version: 0.13.0
 
 authors:
   - shpeckman
@@ -12,7 +12,7 @@ license: MIT
 dependencies:
   termwidth:
     github: shpeckman/termwidth
-  byte_builder:
-    github: shpeckman/byte_builder
+  bytewire:
+    github: shpeckman/bytewire
   tty:
     github: shpeckman/tty

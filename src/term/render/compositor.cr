@@ -1,6 +1,6 @@
 # src/term/render/compositor.cr
 module Term::Render
-  class ::ByteBuilder
+  class ::Bytewire
     def cursor_at(row : Int32, col : Int32) : self
       reserve(26)
       unsafe_csi.unsafe_int(row + 1).unsafe_semi.unsafe_int(col + 1).unsafe_byte(0x48_u8)
@@ -70,13 +70,13 @@ module Term::Render
       @pile.merger = ->(under : Paint, over : Paint) { fuse(under, over) }
     end
 
-    def enter(target : ByteBuilder) : Nil
+    def enter(target : Bytewire) : Nil
       invalidate
       @caret_on = false
       target.str(ENTER)
     end
 
-    def leave(target : ByteBuilder) : Nil
+    def leave(target : Bytewire) : Nil
       @pile.sprites.each do |sprite|
         unplace(target, sprite) if sprite.placed
       end
@@ -163,7 +163,7 @@ module Term::Render
       @sync = sync
     end
 
-    def render(target : ByteBuilder) : Nil
+    def render(target : Bytewire) : Nil
       @painters.each(&.call(self))
       @open = false
       if @pile.damaged?
@@ -186,12 +186,12 @@ module Term::Render
       Paint.new(found.kind, found.value, paint.alpha)
     end
 
-    private def unplace(target : ByteBuilder, sprite : Sprite) : Nil
+    private def unplace(target : Bytewire, sprite : Sprite) : Nil
       target.str("\e_Ga=d,d=i,i=").int(sprite.image_id).str(",p=").int(sprite.placement_id).st
       sprite.placed = nil
     end
 
-    private def place_sprite(target : ByteBuilder, sprite : Sprite, spot : Sprite::Placement) : Nil
+    private def place_sprite(target : Bytewire, sprite : Sprite, spot : Sprite::Placement) : Nil
       target.str("\e_Ga=p,i=").int(sprite.image_id).str(",q=1,p=").int(sprite.placement_id)
       target.str(",x=").int(spot.left) if spot.left != 0
       target.str(",y=").int(spot.top) if spot.top != 0
@@ -200,7 +200,7 @@ module Term::Render
       target.str(",c=").int(spot.cols).str(",r=").int(spot.rows).str(",z=").int(spot.z).str(",C=1").st
     end
 
-    private def shift(target : ByteBuilder) : Nil
+    private def shift(target : Bytewire) : Nil
       return if @pile.shifts.empty? || !@pile.sprites.empty?
       tiles = @pile.tiles
       cols  = @pile.cols
@@ -242,7 +242,7 @@ module Term::Render
       true
     end
 
-    private def emit(target : ByteBuilder) : Nil
+    private def emit(target : Bytewire) : Nil
       tiles = @pile.tiles
       cols  = @pile.cols
       row   = 0
@@ -279,7 +279,7 @@ module Term::Render
       end
     end
 
-    private def place(target : ByteBuilder) : Nil
+    private def place(target : Bytewire) : Nil
       unless @pile.retired.empty?
         @pile.retired.each do |sprite|
           next unless sprite.placed
@@ -304,7 +304,7 @@ module Term::Render
       end
     end
 
-    private def point(target : ByteBuilder) : Nil
+    private def point(target : Bytewire) : Nil
       spot = @pile.caret_position
       code = (shape = @cursor_shape) ? shape.value * 2 + (@cursor_blink ? 1 : 2) : 0
       if @open
@@ -332,7 +332,7 @@ module Term::Render
       end
     end
 
-    private def start(target : ByteBuilder) : Nil
+    private def start(target : Bytewire) : Nil
       return if @open
       @open = true
       @col  = -1
@@ -356,7 +356,7 @@ module Term::Render
       col
     end
 
-    private def reach(target : ByteBuilder, tiles : Slice(Tile), col : Int32, row : Int32, cols : Int32) : Nil
+    private def reach(target : Bytewire, tiles : Slice(Tile), col : Int32, row : Int32, cols : Int32) : Nil
       return if @row == row && @col == col
       if @row == row && @col >= 0 && col > @col
         gap = col - @col
@@ -383,7 +383,7 @@ module Term::Render
       true
     end
 
-    private def draw(target : ByteBuilder, tile : Tile, cols : Int32) : Nil
+    private def draw(target : Bytewire, tile : Tile, cols : Int32) : Nil
       style(target, tile)
       width = 1
       if tile.broken?
@@ -396,7 +396,7 @@ module Term::Render
       @col = -1 if @col >= cols
     end
 
-    private def glyph(target : ByteBuilder, glyph : UInt32) : Nil
+    private def glyph(target : Bytewire, glyph : UInt32) : Nil
       if glyph == 0_u32
         target.byte(0x20_u8)
       elsif Graphemes.pooled?(glyph)
@@ -406,12 +406,12 @@ module Term::Render
       end
     end
 
-    private def lead(target : ByteBuilder, open : Bool) : Bool
+    private def lead(target : Bytewire, open : Bool) : Bool
       open ? target.semi : target.csi
       true
     end
 
-    private def style(target : ByteBuilder, tile : Tile) : Nil
+    private def style(target : Bytewire, tile : Tile) : Nil
       pen = @pen
       unless tile.link == pen.link
         if tile.link == 0_u32
@@ -456,7 +456,7 @@ module Term::Render
       @pen = tile
     end
 
-    private def color(target : ByteBuilder, kind : Tile::Kind, value : UInt32, base : Int32) : Nil
+    private def color(target : Bytewire, kind : Tile::Kind, value : UInt32, base : Int32) : Nil
       case kind
       in Tile::Kind::Default
         target.int(base + 9)
@@ -473,7 +473,7 @@ module Term::Render
       end
     end
 
-    private def rule(target : ByteBuilder, kind : Tile::Kind, value : UInt32) : Nil
+    private def rule(target : Bytewire, kind : Tile::Kind, value : UInt32) : Nil
       case kind
       in Tile::Kind::Default
         target.str("59")

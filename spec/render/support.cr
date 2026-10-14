@@ -7,7 +7,7 @@ class Stage
   getter themes     : Term::Render::Themes
 
   def initialize(cols : Int32 = 20, rows : Int32 = 5)
-    @buf    = ByteBuilder.new
+    @buf    = Bytewire.new
     @themes = Term::Render::Themes.new
     @themes.depth = Term::Render::ColorDepth::TrueColor
     @themes.output = -> { @buf }

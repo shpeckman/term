@@ -6,7 +6,7 @@ require "openssl/hmac"
 require "sync/mutex"
 require "sync/exclusive"
 require "uri"
-require "byte_builder"
+require "bytewire"
 require "termwidth"
 require "tty"
 

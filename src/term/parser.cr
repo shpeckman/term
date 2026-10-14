@@ -51,12 +51,14 @@ class Term
     24 => Named::F12,
   }
 
-  @state  = State::Ground
-  @string = 0_u8
-  @seq    = IO::Memory.new
-  @values = [] of Int32
-  @starts = [] of Int32
-  @utf    = IO::Memory.new
+  @state   = State::Ground
+  @string  = 0_u8
+  @seq     = Bytewire.new(256)
+  @reader  = Bytewire::Reader.new(Bytes.empty)
+  @scratch = Bytewire.new(64)
+  @values  = [] of Int32
+  @starts  = [] of Int32
+  @utf     = Bytewire.new(4)
 
   private def feed(byte : UInt8) : Nil
     case @state
@@ -69,7 +71,7 @@ class Term
         utf(byte)
       end
     in .escape?
-      @seq.clear
+      @seq.reset
       @state = case byte
                when 0x5b then State::Csi
                when 0x4f then State::Ss3
@@ -89,8 +91,8 @@ class Term
         tapped(Key.new(named.value, Key::Action::Press, Mods::None, nil, nil, nil))
       end
     in .paste?
-      @seq.write_byte(byte)
-      slice = @seq.to_slice
+      @seq.byte(byte)
+      slice = @seq.written
       if byte == 0x7e && slice.size >= PASTE_END.size && slice[-PASTE_END.size..] == PASTE_END
         @state = State::Ground
         push Paste.new(["text/plain"], false, nil, String.new(slice[0, slice.size - PASTE_END.size]).scrub)
@@ -100,8 +102,8 @@ class Term
     in .csi?
       case byte
       when 0x20..0x3f
-        @seq.write_byte(byte)
-        @state = State::Ground if @seq.size > CSI_LIMIT
+        @seq.byte(byte)
+        @state = State::Ground if @seq.pos > CSI_LIMIT
       when 0x40..0x7e
         @state = State::Ground
         csi(byte)
@@ -118,8 +120,8 @@ class Term
       when 0x1b
         @state = State::TextEscape
       else
-        @seq.write_byte(byte)
-        @state = State::Ground if @seq.size > TEXT_LIMIT
+        @seq.byte(byte)
+        @state = State::Ground if @seq.pos > TEXT_LIMIT
       end
     in .text_escape?
       if byte == 0x5c
@@ -144,15 +146,17 @@ class Term
   end
 
   private def utf(byte : UInt8) : Nil
-    @utf.clear if byte & 0xc0 != 0x80
-    @utf.write_byte(byte)
-    lead = @utf.to_slice[0]
-    need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 0
-    return @utf.clear if need == 0
-    return if @utf.size < need
-    text = String.new(@utf.to_slice)
-    @utf.clear
-    typed(text[0], Mods::None) if text.valid_encoding?
+    @utf.reset if byte & 0xc0 != 0x80
+    @utf.byte(byte)
+    slice = @utf.written
+    lead  = slice[0]
+    need  = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 0
+    return @utf.reset if need == 0
+    return if slice.size < need
+    @reader.reset(slice)
+    char = @reader.char?
+    @utf.reset
+    typed(char, Mods::None) if char
   end
 
   private def typed(char : Char, mods : Mods) : Nil
@@ -183,7 +187,7 @@ class Term
     when 0x5d then osc
     when 0x5f then apc
     end
-  rescue Base64::Error
+  rescue Base64::Error | ArgumentError
   end
 
   private def parse(bytes : Bytes) : Nil
@@ -218,7 +222,7 @@ class Term
   end
 
   private def csi(final : UInt8) : Nil
-    bytes  = @seq.to_slice
+    bytes  = @seq.written
     letter = final.unsafe_chr
     parse(bytes)
     case bytes.first?.try(&.unsafe_chr)
@@ -254,7 +258,7 @@ class Term
 
   private def tilde : Nil
     if param(0) == 200
-      @seq.clear
+      @seq.reset
       @state = State::Paste
     else
       TILDES[param(0)]?.try { |named| key(named.value) }
@@ -280,11 +284,11 @@ class Term
     shifted = param(0, 1, 0)
     base    = param(0, 2, 0)
     text = if @starts.size > 2
-             String.build do |io|
-               (@starts[2]...@values.size).each do |index|
-                 char(@values[index]).try { |char| io << char }
-               end
-             end.presence
+             @scratch.reset
+             (@starts[2]...@values.size).each do |index|
+               char(@values[index]).try { |char| @scratch.char(char) }
+             end
+             String.new(@scratch.written) unless @scratch.empty?
            end
     key = Key.new(code, action, mods, shifted > 0 ? shifted : nil, base > 0 ? base : nil, text)
     features.keyboard? ? push(key) : tapped(key)
@@ -337,11 +341,23 @@ class Term
     push Resize.new(rows, cols, height, width)
   end
 
-  private def fields(text : String, separator : Char = ':') : Hash(String, String)
-    text.split(separator, remove_empty: true).to_h do |pair|
-      name, _, value = pair.partition('=')
-      {name.strip, value.strip}
+  private def fields(bytes : Bytes, separator : UInt8 = 0x3a_u8) : Hash(String, String)
+    result = {} of String => String
+    reader = Bytewire::Reader.new(bytes)
+    until reader.eof?
+      pair = reader.take_until?(separator) || reader.take_rest
+      reader.byte?
+      next if pair.empty?
+      sub   = Bytewire::Reader.new(pair)
+      name  = sub.take_until?(0x3d_u8) || sub.take_rest
+      value = sub.match?(0x3d_u8) ? sub.take_rest : Bytes.empty
+      result[String.new(name).strip] = String.new(value).strip
     end
+    result
+  end
+
+  private def fields(text : String, separator : Char = ':') : Hash(String, String)
+    fields(text.to_slice, separator.ord.to_u8)
   end
 
   private def number(meta : Hash(String, String), name : String) : Int32
@@ -349,23 +365,33 @@ class Term
   end
 
   private def osc : Nil
-    code, _, body = String.new(@seq.to_slice).partition(';')
-    meta, _, payload = body.partition(';')
-    case code.to_i?
-    when 22   then route(Query::Shape, body)
-    when 21   then route(Query::Color, decode_colors(body))
-    when 5522 then clipboard(fields(meta), payload)
-    when 99   then notified(fields(meta), payload)
-    when DND  then chained(fields(meta), payload)
+    @reader.reset(@seq.written)
+    code = @reader.int?(Int32) || return
+    return unless @reader.semi?
+    case code
+    when 22
+      route(Query::Shape, String.new(@reader.take_rest))
+    when 21
+      route(Query::Color, decode_colors(@reader.take_rest))
+    when 5522, 99, DND
+      meta    = @reader.take_until?(0x3b_u8) || @reader.take_rest
+      payload = @reader.semi? ? String.new(@reader.take_rest) : ""
+      parsed  = fields(meta)
+      case code
+      when 5522 then clipboard(parsed, payload)
+      when 99   then notified(parsed, payload)
+      when DND  then chained(parsed, payload)
+      end
     end
   end
 
   private def apc : Nil
-    body = String.new(@seq.to_slice)
-    return unless body.starts_with?('G')
-    control, _, message = body.lchop('G').partition(';')
-    meta = fields(control, ',')
-    ack  = Ack.new(meta["i"]?.try(&.to_u32?) || 0_u32, meta["I"]?.try(&.to_u32?) || 0_u32, meta["p"]?.try(&.to_u32?) || 0_u32, message)
+    @reader.reset(@seq.written)
+    return unless @reader.match?('G')
+    control = @reader.take_until?(0x3b_u8) || @reader.take_rest
+    message = @reader.semi? ? String.new(@reader.take_rest) : ""
+    meta    = fields(control, 0x2c_u8)
+    ack     = Ack.new(meta["i"]?.try(&.to_u32?) || 0_u32, meta["I"]?.try(&.to_u32?) || 0_u32, meta["p"]?.try(&.to_u32?) || 0_u32, message)
     route(Query::Graphics, ack, ack.number != 0 ? "I#{ack.number}" : "i#{ack.image}") || push(ack)
   end
 end

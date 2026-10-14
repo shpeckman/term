@@ -31,21 +31,21 @@ class Term
     id      = ident(notice.id || UUID.random.to_s)
     cache   = notice.icon_key.try { |key| ident(key) }
     actions = "#{"report," if notice.report}#{"-" unless notice.focus}focus"
-    meta = String.build do |io|
-      io << "i=" << id
-      io << ":a=" << actions unless actions == "focus"
-      io << ":c=1" if notice.closes
-      notice.app.try { |app| io << ":f=" << Base64.strict_encode(app) }
-      notice.types.each { |type| io << ":t=" << Base64.strict_encode(type) }
-      notice.icons.each { |icon| io << ":n=" << Base64.strict_encode(icon) }
-      cache.try { |key| io << ":g=" << key }
-      io << ":o=" << notice.occasion.to_s.downcase unless notice.occasion.always?
-      notice.sound.try { |sound| io << ":s=" << Base64.strict_encode(sound) }
-      notice.urgency.try { |urgency| io << ":u=" << urgency.value }
-      notice.expires.try { |span| io << ":w=" << span.total_milliseconds.to_i }
+    meta = Term.build do |wire|
+      wire.str("i=").str(id)
+      wire.field(":a=", actions) unless actions == "focus"
+      wire.str(":c=1") if notice.closes
+      notice.app.try { |app| wire.str(":f=").base64(app) }
+      notice.types.each { |type| wire.str(":t=").base64(type) }
+      notice.icons.each { |icon| wire.str(":n=").base64(icon) }
+      wire.field(":g=", cache)
+      wire.field(":o=", notice.occasion.to_s.downcase) unless notice.occasion.always?
+      notice.sound.try { |sound| wire.str(":s=").base64(sound) }
+      wire.field(":u=", notice.urgency.try(&.value))
+      wire.field(":w=", notice.expires.try(&.total_milliseconds.to_i))
     end
     exclusive(Family::Notify) do
-      parts = [] of {String, String}
+      parts = [] of {String, Bytes}
       slices(notice.title.to_slice, true).each { |chunk| parts << {"title", chunk} }
       slices(notice.body.to_slice, true).each { |chunk| parts << {"body", chunk} }
       slices(notice.buttons.join(SEPARATOR).to_slice, true).each { |chunk| parts << {"buttons", chunk} }
@@ -54,15 +54,16 @@ class Term
         slices(icon, false).each { |chunk| parts << {"icon", chunk} }
         cache.try { |key| @icons << key }
       end
-      parts << {"title", ""} if parts.empty?
-      sequence = String.build do |io|
+      parts << {"title", Bytes.empty} if parts.empty?
+      sequence = Term.build do |wire|
         parts.each_with_index do |(type, chunk), index|
-          io << "\e]99;" << (index == 0 ? meta : "i=#{id}")
-          io << ":p=" << type unless type == "title"
-          io << ":e=1" unless chunk.empty?
-          cache.try { |key| io << ":g=" << key } if type == "icon" && index > 0
-          io << ":d=0" unless index == parts.size - 1
-          io << ';' << chunk << ST
+          wire.osc(99)
+          index == 0 ? wire.str(meta) : wire.str("i=").str(id)
+          wire.field(":p=", type) unless type == "title"
+          wire.str(":e=1") unless chunk.empty?
+          wire.field(":g=", cache) if type == "icon" && index > 0
+          wire.str(":d=0") unless index == parts.size - 1
+          wire.semi.base64(chunk).st
         end
       end
       @output.send(sequence)
@@ -75,21 +76,21 @@ class Term
   end
 
   def close_notification(id : String) : Nil
-    exclusive(Family::Notify) { @output.send("\e]99;i=#{ident(id)}:p=close;#{ST}") }
+    exclusive(Family::Notify) { @output.send(Term.build { |wire| wire.osc(99).str("i=").str(ident(id)).str(":p=close;").st }) }
   end
 
   def notifications_alive(limit : Time::Span = @config.query_timeout) : Array(String)?
     id = UUID.random.to_s
-    request(Query::NotifyAlive, "\e]99;i=#{id}:p=alive;#{ST}", limit, id).as?(Array(String))
+    request(Query::NotifyAlive, Term.build { |wire| wire.osc(99).str("i=").str(id).str(":p=alive;").st }, limit, id).as?(Array(String))
   end
 
   def notification_support(limit : Time::Span = @config.query_timeout) : Hash(String, Array(String))?
     id = UUID.random.to_s
-    request(Query::NotifySupport, "\e]99;i=#{id}:p=?;#{ST}", limit, id, true).as?(Hash(String, Array(String)))
+    request(Query::NotifySupport, Term.build { |wire| wire.osc(99).str("i=").str(id).str(":p=?;").st }, limit, id, true).as?(Hash(String, Array(String)))
   end
 
-  private def slices(data : Bytes, text : Bool) : Array(String)
-    chunks = [] of String
+  private def slices(data : Bytes, text : Bool) : Array(Bytes)
+    chunks = [] of Bytes
     offset = 0
     while offset < data.size
       size = Math.min(TEXT_CHUNK, data.size - offset)
@@ -98,7 +99,7 @@ class Term
           size -= 1
         end
       end
-      chunks << Base64.strict_encode(data[offset, size])
+      chunks << data[offset, size]
       offset += size
     end
     chunks

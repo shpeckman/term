@@ -1,5 +1,5 @@
 # src/term/render.cr
-require "byte_builder"
+require "bytewire"
 require "termwidth"
 
 class Term

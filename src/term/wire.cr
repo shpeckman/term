@@ -39,18 +39,30 @@ class Term
 
   alias Output = String | Request
 
+  protected def self.build(& : Bytewire ->) : String
+    wire = Bytewire.new(128)
+    yield wire
+    String.new(wire.written)
+  end
+
   protected def self.keys(separator : Char, *pairs) : String
-    String.build do |io|
+    build do |wire|
       pairs.each do |name, value|
         next if value == 0 || value == false
-        io << separator unless io.empty?
-        io << name << '=' << (value == true ? 1 : value)
+        wire.char(separator) unless wire.empty?
+        wire.put(name).byte(0x3d_u8).put(value == true ? 1 : value)
       end
     end
   end
 
   protected def self.merge(separator : Char, *parts : String) : String
-    parts.reject(&.empty?).join(separator)
+    build do |wire|
+      parts.each do |part|
+        next if part.empty?
+        wire.char(separator) unless wire.empty?
+        wire.str(part)
+      end
+    end
   end
 
   getter events : Channel(Event)
@@ -78,21 +90,20 @@ class Term
     @mutexes[family.value].synchronize { yield }
   end
 
-  private def blocks(source : Bytes | IO, size : Int32 = RAW_CHUNK, & : String, Bool ->) : Nil
+  private def blocks(source : Bytes, size : Int32 = RAW_CHUNK, & : Bytes, Bool ->) : Nil
+    return yield Bytes.empty, true if source.empty?
+    Bytewire.base64_chunks(source, (size // 3) * 4) do |chunk, more|
+      yield chunk, !more
+    end
+  end
+
+  private def blocks(source : IO, size : Int32 = RAW_CHUNK, & : Bytes, Bool ->) : Nil
     held = nil
     each_block(source, size) do |slice|
       held.try { |previous| yield previous, false }
-      held = Base64.strict_encode(slice)
+      held = slice.dup
     end
-    yield held || "", true
-  end
-
-  private def each_block(source : Bytes, size : Int32, & : Bytes ->) : Nil
-    offset = 0
-    while offset < source.size
-      yield source[offset, Math.min(size, source.size - offset)]
-      offset += size
-    end
+    yield held || Bytes.empty, true
   end
 
   private def each_block(source : IO, size : Int32, & : Bytes ->) : Nil
