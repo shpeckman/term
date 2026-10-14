@@ -40,48 +40,54 @@ module Term::Render
     end
 
     def parse(text : String) : Tuple(UInt32, UInt8)?
-      body, _, tail = text.partition('@')
-      opacity = tail.empty? ? 1.0 : tail.to_f?
+      reader  = Bytewire::Reader.new(text)
+      body    = reader.take_until?(0x40_u8) || reader.take_rest
+      opacity = reader.match?(0x40_u8) ? String.new(reader.take_rest).to_f? : 1.0
       return unless opacity
-      alpha = (opacity.clamp(0.0, 1.0) * 255).round.to_u8
-      if body.starts_with?('#') && body.size.in?(4, 7, 10, 13)
-        width = body.size // 3
-        r     = channel_hex(body, 1, width) || return
-        g     = channel_hex(body, 1 + width, width) || return
-        b     = channel_hex(body, 1 + width * 2, width) || return
+      alpha  = (opacity.clamp(0.0, 1.0) * 255).round.to_u8
+      cursor = Bytewire::Reader.new(body)
+      if cursor.match?('#') && cursor.remaining.in?(3, 6, 9, 12)
+        width = cursor.remaining // 3
+        r     = channel_hex(cursor, width) || return
+        g     = channel_hex(cursor, width) || return
+        b     = channel_hex(cursor, width) || return
+        return unless cursor.eof?
         {pack(r, g, b), alpha}
-      elsif body.starts_with?("rgb:")
-        parts = body.lchop("rgb:").split('/')
-        return unless parts.size == 3
-        r = channel_scaled(parts[0]) || return
-        g = channel_scaled(parts[1]) || return
-        b = channel_scaled(parts[2]) || return
+      elsif cursor.match?("rgb:")
+        r = channel_scaled(cursor) || return
+        return unless cursor.match?('/')
+        g = channel_scaled(cursor) || return
+        return unless cursor.match?('/')
+        b = channel_scaled(cursor) || return
+        return unless cursor.eof?
         {pack(r, g, b), alpha}
-      elsif body.starts_with?("rgbi:")
-        parts = body.lchop("rgbi:").split('/')
-        return unless parts.size == 3
-        r = channel_float(parts[0]) || return
-        g = channel_float(parts[1]) || return
-        b = channel_float(parts[2]) || return
+      elsif cursor.match?("rgbi:")
+        r = channel_float(cursor.take_until?(0x2f_u8)) || return
+        return unless cursor.match?('/')
+        g = channel_float(cursor.take_until?(0x2f_u8)) || return
+        return unless cursor.match?('/')
+        b = channel_float(cursor.take_rest) || return
         {pack(r, g, b), alpha}
       end
     end
 
-    private def channel_hex(body : String, offset : Int32, width : Int32) : UInt8?
-      body[offset, width].to_u16?(16).try do |value|
+    private def channel_hex(reader : Bytewire::Reader, width : Int32) : UInt8?
+      reader.hex?(UInt16, width).try do |value|
         ((value << (16 - 4 * width)) >> 8).to_u8!
       end
     end
 
-    private def channel_scaled(digits : String) : UInt8?
-      return unless digits.size.in?(1..4)
-      digits.to_u32?(16).try do |value|
-        ((value * 0xffff_u32 // ((1_u32 << (4 * digits.size)) - 1)) >> 8).to_u8!
-      end
+    private def channel_scaled(reader : Bytewire::Reader) : UInt8?
+      start = reader.pos
+      value = reader.hex?(UInt32) || return
+      count = reader.pos - start
+      return unless count.in?(1..4)
+      ((value * 0xffff_u32 // ((1_u32 << (4 * count)) - 1)) >> 8).to_u8!
     end
 
-    private def channel_float(part : String) : UInt8?
-      part.to_f?.try do |value|
+    private def channel_float(slice : Bytes?) : UInt8?
+      return unless slice && !slice.empty?
+      String.new(slice).to_f?.try do |value|
         ((value.clamp(0.0, 1.0) * 0xffff).round.to_u16 >> 8).to_u8!
       end
     end

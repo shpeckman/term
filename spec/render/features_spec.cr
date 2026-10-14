@@ -151,7 +151,7 @@ describe "cursor" do
     field.cursor(1, 0)
     fresh.compositor.cursor_shape = Term::Render::CursorShape::Underline
     fresh.frame.should end_with("\e[1;2H\e[3 q\e[?25h")
-    buf = ByteBuilder.new
+    buf = Bytewire.new
     fresh.compositor.enter(buf)
     fresh.compositor.leave(buf)
     String.new(buf.written).should end_with("\e[0m\e[0 q\e[?25h")
@@ -247,7 +247,7 @@ describe Term::Render::Sprite do
     stage.frame.should contain("\e_Ga=p,i=3,q=1,p=#{image.placement_id},c=2,r=2")
     stage.compositor.invalidate
     stage.frame.should contain("\e_Ga=p,i=3,q=1,p=#{image.placement_id},c=2,r=2")
-    buf = ByteBuilder.new
+    buf = Bytewire.new
     stage.compositor.leave(buf)
     String.new(buf.written).should contain("\e_Ga=d,d=i,i=3,p=#{image.placement_id}\e\\")
     image.placed.should be_nil

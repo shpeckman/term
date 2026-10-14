@@ -156,7 +156,7 @@ module Term::Render
     end
   end
 
-  class ::ByteBuilder
+  class ::Bytewire
     def color_rgb(value : UInt32) : self
       str("rgb:").hex2((value >> 16).to_u8!).char('/').hex2((value >> 8).to_u8!).char('/').hex2(value.to_u8!)
     end
@@ -188,7 +188,7 @@ module Term::Render
     property space           : BlendSpace
     property? extend_palette : Bool
 
-    property output     : Proc(ByteBuilder)                      = -> : ByteBuilder { raise "Themes#output is not wired" }
+    property output     : Proc(Bytewire)                         = -> : Bytewire { raise "Themes#output is not wired" }
     property running    : Proc(Bool)                             = -> { false }
     property querier    : Proc(Proc(Survey?, Nil), Nil)          = ->(done : Proc(Survey?, Nil)) { done.call(nil) }
     property ticker     : Proc(Time::Span, Proc(Nil), Proc(Nil)) = ->(span : Time::Span, tick : Proc(Nil)) { -> { nil } }

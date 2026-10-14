@@ -164,44 +164,60 @@ class Term
     end
 
     def self.parse(text : String) : Color?
-      body, _, alpha = text.partition('@')
-      opacity = alpha.empty? ? 1.0 : alpha.to_f?
+      reader  = Bytewire::Reader.new(text)
+      body    = reader.take_until?(0x40_u8) || reader.take_rest
+      opacity = reader.match?(0x40_u8) ? String.new(reader.take_rest).to_f? : 1.0
       return unless opacity
-      parts =
-        if body.starts_with?("rgbi:")
-          body.lchop("rgbi:").split('/').map do |part|
-            part.to_f?.try { |value| (value.clamp(0.0, 1.0) * 0xffff).round.to_u16 }
-          end
-        elsif body.starts_with?("rgb:")
-          body.lchop("rgb:").split('/').map { |part| scaled(part) }
-        elsif body.starts_with?('#') && body.size.in?(4, 7, 10, 13)
-          width = body.size // 3
-          (0...3).map do |index|
-            body[1 + index * width, width].to_u16?(16).try { |value| value << (16 - 4 * width) }
-          end
-        elsif named = NAMES[body.downcase.delete(' ')]?
-          [16, 8, 0].map { |shift| (((named >> shift) & 255) * 257).to_u16.as(UInt16?) }
-        end
-      return unless parts && parts.size == 3
-      red, green, blue = parts
-      return unless red && green && blue
-      new(red, green, blue, opacity)
+      cursor = Bytewire::Reader.new(body)
+      if cursor.match?("rgb:")
+        r = scaled(cursor) || return
+        return unless cursor.match?('/')
+        g = scaled(cursor) || return
+        return unless cursor.match?('/')
+        b = scaled(cursor) || return
+        return unless cursor.eof?
+        new(r, g, b, opacity)
+      elsif cursor.match?('#') && cursor.remaining.in?(3, 6, 9, 12)
+        width = cursor.remaining // 3
+        shift = 16 - 4 * width
+        r     = cursor.hex?(UInt16, width) || return
+        g     = cursor.hex?(UInt16, width) || return
+        b     = cursor.hex?(UInt16, width) || return
+        return unless cursor.eof?
+        new(r << shift, g << shift, b << shift, opacity)
+      elsif cursor.match?("rgbi:")
+        r = float_channel(cursor.take_until?(0x2f_u8)) || return
+        return unless cursor.match?('/')
+        g = float_channel(cursor.take_until?(0x2f_u8)) || return
+        return unless cursor.match?('/')
+        b = float_channel(cursor.take_rest) || return
+        new(r, g, b, opacity)
+      elsif named = NAMES[String.new(body).downcase.delete(' ')]?
+        new((((named >> 16) & 255) * 257).to_u16, (((named >> 8) & 255) * 257).to_u16, ((named & 255) * 257).to_u16, opacity)
+      end
     end
 
-    def self.scaled(digits : String) : UInt16?
-      return unless digits.size.in?(1..4)
-      digits.to_u32?(16).try do |value|
-        (value * 0xffff // ((1_u32 << (4 * digits.size)) - 1)).to_u16
-      end
+    def self.scaled(reader : Bytewire::Reader) : UInt16?
+      start = reader.pos
+      value = reader.hex?(UInt32) || return
+      count = reader.pos - start
+      return unless count.in?(1..4)
+      (value * 0xffff_u32 // ((1_u32 << (4 * count)) - 1)).to_u16
+    end
+
+    private def self.float_channel(slice : Bytes?) : UInt16?
+      return unless slice && !slice.empty?
+      String.new(slice).to_f?.try { |value| (value.clamp(0.0, 1.0) * 0xffff).round.to_u16 }
     end
 
     def to_s(io : IO) : Nil
-      io << "rgb:"
-      {red, green, blue}.each_with_index do |channel, index|
-        io << '/' unless index == 0
-        io << channel.to_s(16).rjust(4, '0')
-      end
-      io << '@' << alpha unless alpha == 1.0
+      wire = Bytewire.new(32)
+      wire.str("rgb:")
+        .hex2((red >> 8).to_u8!).hex2(red.to_u8!).char('/')
+        .hex2((green >> 8).to_u8!).hex2(green.to_u8!).char('/')
+        .hex2((blue >> 8).to_u8!).hex2(blue.to_u8!)
+      wire.char('@').put(alpha) unless alpha == 1.0
+      io.write(wire.written)
     end
   end
 
@@ -210,68 +226,100 @@ class Term
   end
 
   def pointer=(shape : Shape) : Shape
-    @output.send("\e]22;=#{shape.wire}#{ST}")
+    @output.send(Term.build { |wire| wire.osc(22).char('=').str(shape.wire).st })
     shape
   end
 
   def reset_pointer : Nil
-    @output.send("\e]22;#{ST}")
+    @output.send("\e]22;\e\\")
   end
 
   def push_pointer(*shapes : Shape) : Nil
-    @output.send("\e]22;>#{shapes.join(',', &.wire)}#{ST}")
+    @output.send(Term.build do |wire|
+      wire.osc(22).char('>')
+      shapes.each_with_index do |shape, index|
+        wire.char(',') unless index == 0
+        wire.str(shape.wire)
+      end
+      wire.st
+    end)
   end
 
   def pop_pointer : Nil
-    @output.send("\e]22;<#{ST}")
+    @output.send("\e]22;<\e\\")
   end
 
   def pointer(which : ShapeQuery = :current) : String?
-    reply = request(Query::Shape, "\e]22;?#{which.wire}#{ST}").as?(String)
+    reply = request(Query::Shape, Term.build { |wire| wire.osc(22).char('?').str(which.wire).st }).as?(String)
     reply unless reply == "0"
   end
 
   def pointer_support(*shapes : Shape) : Array(Bool)?
-    request(Query::Shape, "\e]22;?#{shapes.join(',', &.wire)}#{ST}").as?(String).try do |reply|
+    seq = Term.build do |wire|
+      wire.osc(22).char('?')
+      shapes.each_with_index do |shape, index|
+        wire.char(',') unless index == 0
+        wire.str(shape.wire)
+      end
+      wire.st
+    end
+    request(Query::Shape, seq).as?(String).try do |reply|
       reply.split(',').map { |flag| flag == "1" }
     end
   end
 
   def push_colors : Nil
-    @output.send("\e]30001#{ST}")
+    @output.send("\e]30001\e\\")
   end
 
   def pop_colors : Nil
-    @output.send("\e]30101#{ST}")
+    @output.send("\e]30101\e\\")
   end
 
   def color(key : String | Int32, value : Color | String) : Nil
-    @output.send("\e]21;#{key}=#{value}#{ST}")
+    @output.send(Term.build { |wire| wire.osc(21).put(key).char('=').str(value.to_s).st })
   end
 
   def dynamic_color(key : String | Int32) : Nil
-    @output.send("\e]21;#{key}=#{ST}")
+    @output.send(Term.build { |wire| wire.osc(21).put(key).char('=').st })
   end
 
   def reset_color(key : String | Int32) : Nil
-    @output.send("\e]21;#{key}#{ST}")
+    @output.send(Term.build { |wire| wire.osc(21).put(key).st })
   end
 
   def colors(*keys : String | Int32) : Palette?
-    query = keys.join(';') { |key| "#{key}=?" }
-    request(Query::Color, "\e]21;#{query}#{ST}").as?(Palette)
+    seq = Term.build do |wire|
+      wire.osc(21)
+      keys.each_with_index do |key, index|
+        wire.semi unless index == 0
+        wire.put(key).str("=?")
+      end
+      wire.st
+    end
+    request(Query::Color, seq).as?(Palette)
   end
 
   def confirm_color(key : String | Int32, value : Color | String, limit : Time::Span = @config.query_timeout) : Color?
-    request(Query::Color, "\e]21;#{key}=#{value};#{key}=?#{ST}", limit).as?(Palette).try &.[key.to_s]?
+    seq = Term.build { |wire| wire.osc(21).put(key).char('=').str(value.to_s).semi.put(key).str("=?").st }
+    request(Query::Color, seq, limit).as?(Palette).try &.[key.to_s]?
   end
 
-  private def decode_colors(body : String) : Palette
+  private def decode_colors(body : Bytes) : Palette
     palette = Palette.new({} of String => Color?, [] of String)
-    body.split(';') do |pair|
-      name, _, value = pair.partition('=')
+    reader  = Bytewire::Reader.new(body)
+    decoder = Bytewire.new(32)
+    until reader.eof?
+      pair = reader.take_until?(0x3b_u8) || reader.take_rest
+      reader.byte?
+      next if pair.empty?
+      sub   = Bytewire::Reader.new(pair)
+      name  = String.new(sub.take_until?(0x3d_u8) || sub.take_rest)
+      value = sub.match?(0x3d_u8) ? String.new(sub.take_rest) : ""
       if name == "unknown"
-        palette.unknown << Base64.decode_string(value)
+        decoder.reset
+        decoder.decode64(value)
+        palette.unknown << String.new(decoder.written)
       else
         palette.colors[name] = Color.parse(value)
       end

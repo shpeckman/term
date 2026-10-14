@@ -157,31 +157,35 @@ class Term
 
   def self.placeholder(id : UInt32, columns : Int32, rows : Int32, placement : UInt32 = 0, compact : Bool = false) : Array(String)
     high = (id >> 24).to_i
+    wire = Bytewire.new(128)
     Array.new(rows) do |row|
-      String.build do |io|
-        io << "\e[38;2;" << ((id >> 16) & 255) << ';' << ((id >> 8) & 255) << ';' << (id & 255) << 'm'
-        io << "\e[58;2;" << ((placement >> 16) & 255) << ';' << ((placement >> 8) & 255) << ';' << (placement & 255) << 'm' if placement != 0
-        columns.times do |column|
-          io << PLACEHOLDER
-          next if compact && column > 0
-          io << DIACRITICS[row].unsafe_chr
-          next if compact && high == 0
-          io << DIACRITICS[column].unsafe_chr
-          io << DIACRITICS[high].unsafe_chr if high > 0
-        end
-        io << "\e[39m"
-        io << "\e[59m" if placement != 0
+      wire.reset
+      wire.str("\e[38;2;").int3(((id >> 16) & 255).to_i32!).semi.int3(((id >> 8) & 255).to_i32!).semi.int3((id & 255).to_i32!).char('m')
+      if placement != 0
+        wire.str("\e[58;2;").int3(((placement >> 16) & 255).to_i32!).semi.int3(((placement >> 8) & 255).to_i32!).semi.int3((placement & 255).to_i32!).char('m')
       end
+      columns.times do |column|
+        wire.char(PLACEHOLDER)
+        next if compact && column > 0
+        wire.char(DIACRITICS[row].unsafe_chr)
+        next if compact && high == 0
+        wire.char(DIACRITICS[column].unsafe_chr)
+        wire.char(DIACRITICS[high].unsafe_chr) if high > 0
+      end
+      wire.str("\e[39m")
+      wire.str("\e[59m") if placement != 0
+      String.new(wire.written)
     end
   end
 
   def self.place_code(id : UInt32 = 0, number : UInt32 = 0, placement : Placement = Placement.new, quiet : Quiet = Quiet::None) : String
-    "\e_G#{place_control(id, number, placement, quiet)}#{ST}"
+    build { |wire| wire.apc.char('G').str(place_control(id, number, placement, quiet)).st }
   end
 
   def self.delete_code(target : Delete = Delete::Visible, free : Bool = false, id : UInt32 = 0, number : UInt32 = 0, placement : UInt32 = 0, x : Int32 = 0, y : Int32 = 0, z : Int32 = 0) : String
-    letter = DELETES[target]
-    "\e_G#{keys(',', {'a', 'd'}, {'d', free ? letter.upcase : letter}, {'i', id}, {'I', number}, {'p', placement}, {'x', x}, {'y', y}, {'z', z})}#{ST}"
+    letter  = DELETES[target]
+    control = keys(',', {'a', 'd'}, {'d', free ? letter.upcase : letter}, {'i', id}, {'I', number}, {'p', placement}, {'x', x}, {'y', y}, {'z', z})
+    build { |wire| wire.apc.char('G').str(control).st }
   end
 
   protected def self.place_control(id : UInt32, number : UInt32, placement : Placement, quiet : Quiet) : String
@@ -224,7 +228,7 @@ class Term
 
   def animate(id : UInt32 = 0, number : UInt32 = 0, state : Playback? = nil, current : Int32 = 0, loops : Int32 = 0, target : Int32 = 0, gap : Int32 = 0, quiet : Quiet = Quiet::None) : Nil
     control = keys(',', {'a', 'a'}, {'i', id}, {'I', number}, {'q', quiet.value}, {'s', state.try(&.value) || 0}, {'c', current}, {'v', loops}, {'r', target}, {'z', gap})
-    exclusive(Family::Graphics) { @output.send("\e_G#{control}#{ST}") }
+    exclusive(Family::Graphics) { @output.send(Term.build { |wire| wire.apc.char('G').str(control).st }) }
   end
 
   def compose(source : Int32, target : Int32, id : UInt32 = 0, number : UInt32 = 0, width : Int32 = 0, height : Int32 = 0, source_x : Int32 = 0, source_y : Int32 = 0, x : Int32 = 0, y : Int32 = 0, replace : Bool = false, quiet : Quiet = Quiet::None, limit : Time::Span = @config.query_timeout) : Ack?
@@ -256,16 +260,16 @@ class Term
     wait = quiet.none? && (id != 0 || number != 0)
     waiter = exclusive(Family::Graphics) do
       pending = nil
-      whole   = probe ? String::Builder.new : nil
+      whole   = probe ? Bytewire.new(256) : nil
       first   = true
-      blocks(source) do |text, last|
-        code = String.build do |io|
-          io << "\e_G" << merge(',', first ? control : more, first && last ? "" : "m=#{last ? 0 : 1}")
-          io << ';' << text unless text.empty?
-          io << ST
+      blocks(source) do |chunk, last|
+        code = Term.build do |wire|
+          wire.apc.char('G').str(merge(',', first ? control : more, first && last ? "" : "m=#{last ? 0 : 1}"))
+          wire.semi.base64(chunk) unless chunk.empty?
+          wire.st
         end
         if whole
-          whole << code
+          whole.str(code)
         elsif first && wait
           pending = enqueue(Query::Graphics, code, key)
         else
@@ -273,7 +277,7 @@ class Term
         end
         first = false
       end
-      whole ? enqueue(Query::Graphics, whole.to_s, key, true) : pending
+      whole ? enqueue(Query::Graphics, String.new(whole.written), key, true) : pending
     end
     waiter.try { |channel| await(channel, limit).as?(Ack) }
   end

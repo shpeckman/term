@@ -68,17 +68,24 @@ class Term
 
   private class Chain
     getter meta = {} of String => String
-    getter text = IO::Memory.new
-    getter data = IO::Memory.new
-    @carry = ""
+    getter text = Bytewire.new(128)
+    getter data = Bytewire.new(256)
+    @carry   = ""
+    @scratch = Bytewire.new(4096)
 
-    def decode(payload : String, target : IO, final : Bool) : Nil
+    def decode(payload : String, sink : IO?, final : Bool) : Nil
       @carry += payload
       size = final ? @carry.bytesize : @carry.bytesize & ~3
       return if size == 0
       encoded = @carry.byte_slice(0, size)
       @carry  = @carry.byte_slice(size)
-      Base64.decode(encoded, target)
+      if sink
+        @scratch.reset
+        @scratch.decode64(encoded)
+        sink.write(@scratch.written)
+      else
+        @data.decode64(encoded)
+      end
     end
   end
 
@@ -96,9 +103,13 @@ class Term
   end
 
   def self.uri_list(paths : Enumerable(String | Path)) : String
-    paths.join do |path|
-      full = Path.new(path).expand
-      "file://#{URI.encode_path(full.to_s)}#{"/" if Dir.exists?(full) && !full.to_s.ends_with?('/')}\r\n"
+    build do |wire|
+      paths.each do |path|
+        full = Path.new(path).expand
+        wire.str("file://").str(URI.encode_path(full.to_s))
+        wire.char('/') if Dir.exists?(full) && !full.to_s.ends_with?('/')
+        wire.str("\r\n")
+      end
     end
   end
 
@@ -272,12 +283,14 @@ class Term
   end
 
   private def dnd_stream(meta : String, source : Bytes | IO) : Nil
-    prefix = "\e]#{DND};#{merge(':', meta, @mux)}"
+    head = merge(':', meta, @mux)
     exclusive(Family::Dnd) do
-      blocks(source) do |text, _|
-        @output.send("#{prefix}:m=1;#{text}#{ST}") unless text.empty?
+      blocks(source) do |chunk, _|
+        unless chunk.empty?
+          @output.send(Term.build { |wire| wire.osc(DND).str(head).str(":m=1;").base64(chunk).st })
+        end
       end
-      @output.send("#{prefix}:m=0#{ST}")
+      @output.send(Term.build { |wire| wire.osc(DND).str(head).str(":m=0").st })
     end
   end
 
@@ -286,16 +299,16 @@ class Term
   end
 
   private def dnd_code(meta : String, payload : String = "") : String
-    prefix = "\e]#{DND};#{merge(':', meta, @mux)}"
-    String.build do |io|
+    head = merge(':', meta, @mux)
+    Term.build do |wire|
       offset = 0
       while payload.bytesize - offset > WIRE_CHUNK
-        io << prefix << ":m=1;" << payload.byte_slice(offset, WIRE_CHUNK) << ST
+        wire.osc(DND).str(head).str(":m=1;").str(payload.byte_slice(offset, WIRE_CHUNK)).st
         offset += WIRE_CHUNK
       end
-      io << prefix
-      io << ';' << payload.byte_slice(offset) if offset < payload.bytesize
-      io << ST
+      wire.osc(DND).str(head)
+      wire.semi.str(payload.byte_slice(offset)) if offset < payload.bytesize
+      wire.st
     end
   end
 
@@ -323,13 +336,13 @@ class Term
     chain.meta.merge!(meta)
     final = meta["m"]? != "1"
     if chain.meta["t"]? == "r"
-      chain.decode(payload, peek(Query::DropData, name.lchop("r:")).try(&.sink) || chain.data, final)
+      chain.decode(payload, peek(Query::DropData, name.lchop("r:")).try(&.sink), final)
     else
-      chain.text << payload
+      chain.text.str(payload)
     end
     return unless final
     @chains.delete(name)
-    dispatch(chain.meta, chain.text.to_s, chain.data.to_slice)
+    dispatch(chain.meta, String.new(chain.text.written), chain.data.written.dup)
   end
 
   private def dispatch(meta : Hash(String, String), payload : String, data : Bytes) : Nil

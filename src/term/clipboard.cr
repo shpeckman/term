@@ -12,23 +12,29 @@ class Term
   end
 
   private class Transfer
-    getter data = {} of String => IO::Memory
+    getter data = {} of String => Bytewire
     getter? solicited : Bool
     getter? primary   : Bool
     getter password   : String?
     getter sink       : IO?
-    @carry = ""
+    @carry   = ""
+    @scratch = Bytewire.new(4096)
 
     def initialize(@solicited, @primary, @password, @sink)
     end
 
     def add(mime : String, chunk : String) : Nil
-      io = @sink || @data.put_if_absent(mime) { IO::Memory.new }
       @carry += chunk
       return unless @carry.bytesize % 4 == 0
       encoded = @carry
       @carry  = ""
-      Base64.decode(encoded, io)
+      if sink = @sink
+        @scratch.reset
+        @scratch.decode64(encoded)
+        sink.write(@scratch.written)
+      else
+        @data.put_if_absent(mime) { Bytewire.new }.decode64(encoded)
+      end
     end
   end
 
@@ -51,15 +57,16 @@ class Term
 
   private def write(items : Hash(String, _), aliases : Hash(String, Array(String)), primary : Bool, limit : Time::Span) : Status?
     waiter = exclusive(Family::Clipboard) do
-      opened = enqueue(Query::ClipboardWrite, "\e]5522;type=write#{location(primary)}#{@credentials}#{ST}")
+      opened = enqueue(Query::ClipboardWrite, Term.build { |wire| wire.osc(5522).str("type=write").str(location(primary)).str(@credentials).st })
       items.each do |mime, data|
-        encoded = Base64.strict_encode(mime)
-        blocks(data, CHUNK) { |text, _| @output.send("\e]5522;type=wdata:mime=#{encoded};#{text}#{ST}") }
+        blocks(data, CHUNK) do |chunk, _|
+          @output.send(Term.build { |wire| wire.osc(5522).str("type=wdata:mime=").base64(mime).semi.base64(chunk).st })
+        end
       end
       aliases.each do |target, names|
-        @output.send("\e]5522;type=walias:mime=#{Base64.strict_encode(target)};#{Base64.strict_encode(names.join(' '))}#{ST}")
+        @output.send(Term.build { |wire| wire.osc(5522).str("type=walias:mime=").base64(target).semi.base64(names.join(' ')).st })
       end
-      @output.send("\e]5522;type=wdata#{ST}")
+      @output.send("\e]5522;type=wdata\e\\")
       opened
     end
     await(waiter, limit).as?(Status)
@@ -90,7 +97,9 @@ class Term
   end
 
   private def fetch(meta : String, mimes : String, limit : Time::Span, sink : IO? = nil) : Clipboard?
-    sequence = "\e]5522;type=read:id=#{@config.clipboard_id}#{meta};#{Base64.strict_encode(mimes)}#{ST}"
+    sequence = Term.build do |wire|
+      wire.osc(5522).str("type=read:id=").str(@config.clipboard_id).str(meta).semi.base64(mimes).st
+    end
     attempts = @config.busy_retries
     loop do
       waiter = exclusive(Family::Clipboard) { enqueue(Query::ClipboardRead, sequence, sink: sink) }
@@ -113,7 +122,10 @@ class Term
         solicited = meta.has_key?("id") || (!meta.has_key?("pw") && !waiting.nil?)
         @transfer = Transfer.new(solicited, meta["loc"]? == "primary", meta["pw"]?, solicited ? waiting.try(&.sink) : nil)
       when "DATA"
-        @transfer.try &.add(Base64.decode_string(meta["mime"]? || ""), payload)
+        @scratch.reset
+        @scratch.decode64(meta["mime"]? || "")
+        mime = String.new(@scratch.written)
+        @transfer.try &.add(mime, payload)
       when "DONE"
         finish
       else
@@ -125,7 +137,7 @@ class Term
   private def finish : Nil
     transfer  = @transfer || return
     @transfer = nil
-    data      = transfer.data.transform_values(&.to_slice)
+    data      = transfer.data.transform_values { |wire| wire.written.dup }
     if transfer.solicited?
       route(Query::ClipboardRead, Clipboard.new(Status::Done, data))
     else
