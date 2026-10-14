@@ -5,16 +5,16 @@ module Term::Render
       LOCK = 0.999_f32
 
       getter amount : Float32
-      getter paint : Paint
-      getter? pure : Bool
+      getter paint  : Paint
+      getter? pure  : Bool
 
       def initialize
-        @c0 = 0.0_f32
-        @c1 = 0.0_f32
-        @c2 = 0.0_f32
+        @c0     = 0.0_f32
+        @c1     = 0.0_f32
+        @c2     = 0.0_f32
         @amount = 0.0_f32
-        @pure = false
-        @paint = Paint::NONE
+        @pure   = false
+        @paint  = Paint::NONE
       end
 
       @[AlwaysInline]
@@ -29,8 +29,8 @@ module Term::Render
 
       def add(paint : Paint, level : Float32, palette : Palette, space : BlendSpace) : Nil
         if @amount == 0.0_f32 && level >= LOCK
-          @pure = true
-          @paint = paint
+          @pure   = true
+          @paint  = paint
           @amount = 1.0_f32
           return
         end
@@ -54,52 +54,52 @@ module Term::Render
     record Caret, plane : Plane, x : Int32, y : Int32
     record Shift, top : Int32, bottom : Int32, lines : Int32
 
-    getter planes : Array(Plane)
+    getter planes  : Array(Plane)
     getter sprites : Array(Sprite)
     getter retired : Array(Sprite)
-    getter shifts : Array(Shift)
-    getter cols : Int32
-    getter rows : Int32
-    getter tiles : Slice(Tile)
-    getter caret : Caret?
+    getter shifts  : Array(Shift)
+    getter cols    : Int32
+    getter rows    : Int32
+    getter tiles   : Slice(Tile)
+    getter caret   : Caret?
 
     property notify : (-> Nil)?
     property merger : (Paint, Paint -> Paint)?
 
-    @palette : Palette
+    @palette  : Palette
     @terminal : Palette
-    @themes : Themes?
+    @themes   : Themes?
     @backdrop : ColorSpace::Triple
 
     def initialize(cols : Int32, rows : Int32)
-      @cols = Math.max(cols, 0)
-      @rows = Math.max(rows, 0)
-      @planes = [] of Plane
-      @sprites = [] of Sprite
-      @retired = [] of Sprite
-      @shifts = [] of Shift
-      @tiles = Slice(Tile).new(@cols * @rows, Tile::BLANK)
-      @low = Slice(Int32).new(@rows, @cols)
-      @high = Slice(Int32).new(@rows, 0)
-      @caret = nil
-      @notify = nil
-      @merger = nil
-      @serial = 0_u32
-      @stack = [] of Plane
-      @lefts = [] of Int32
-      @tops = [] of Int32
-      @windows = [] of Tuple(Int32, Int32, Int32, Int32)
-      @powers = [] of Float32
-      @row = [] of Int32
-      @blocks = [] of Block
-      @palette = Palette.stock
+      @cols     = Math.max(cols, 0)
+      @rows     = Math.max(rows, 0)
+      @planes   = [] of Plane
+      @sprites  = [] of Sprite
+      @retired  = [] of Sprite
+      @shifts   = [] of Shift
+      @tiles    = Slice(Tile).new(@cols * @rows, Tile::BLANK)
+      @low      = Slice(Int32).new(@rows, @cols)
+      @high     = Slice(Int32).new(@rows, 0)
+      @caret    = nil
+      @notify   = nil
+      @merger   = nil
+      @serial   = 0_u32
+      @stack    = [] of Plane
+      @lefts    = [] of Int32
+      @tops     = [] of Int32
+      @windows  = [] of Tuple(Int32, Int32, Int32, Int32)
+      @powers   = [] of Float32
+      @row      = [] of Int32
+      @blocks   = [] of Block
+      @palette  = Palette.stock
       @terminal = @palette
-      @themes = nil
+      @themes   = nil
       @backdrop = {0.0_f32, 0.0_f32, 0.0_f32}
-      @space = BlendSpace::Linear
-      @depth = ColorDepth::TrueColor
-      @indexed = true
-      @snap = false
+      @space    = BlendSpace::Linear
+      @depth    = ColorDepth::TrueColor
+      @indexed  = true
+      @snap     = false
     end
 
     def inspect(io : IO) : Nil
@@ -117,8 +117,8 @@ module Term::Render
     end
 
     def self.fuse(under : Paint, over : Paint, palette : Palette, space : BlendSpace) : Paint
-      top = over.alpha / 255.0_f32
-      rest = under.alpha / 255.0_f32 * (1.0_f32 - top)
+      top   = over.alpha / 255.0_f32
+      rest  = under.alpha / 255.0_f32 * (1.0_f32 - top)
       total = top + rest
       above = ColorSpace.coords(rgb(over, palette), space)
       below = ColorSpace.coords(rgb(under, palette), space)
@@ -191,7 +191,7 @@ module Term::Render
 
     def scrolled(top : Int32, rows : Int32, lines : Int32) : Nil
       first = Math.max(top, 0)
-      last = Math.min(top + rows, @rows)
+      last  = Math.min(top + rows, @rows)
       @shifts << Shift.new(first, last, lines) if last - first > lines.abs
     end
 
@@ -217,11 +217,11 @@ module Term::Render
     end
 
     def resize(cols : Int32, rows : Int32) : Nil
-      @cols = Math.max(cols, 0)
-      @rows = Math.max(rows, 0)
+      @cols  = Math.max(cols, 0)
+      @rows  = Math.max(rows, 0)
       @tiles = Slice(Tile).new(@cols * @rows, Tile::BLANK)
-      @low = Slice(Int32).new(@rows, @cols)
-      @high = Slice(Int32).new(@rows, 0)
+      @low   = Slice(Int32).new(@rows, @cols)
+      @high  = Slice(Int32).new(@rows, 0)
       damage_all
     end
 
@@ -230,9 +230,9 @@ module Term::Render
     end
 
     def damage(x : Int32, y : Int32, cols : Int32, rows : Int32) : Nil
-      left = Math.max(x, 0)
-      right = Math.min(x + cols, @cols)
-      top = Math.max(y, 0)
+      left   = Math.max(x, 0)
+      right  = Math.min(x + cols, @cols)
+      top    = Math.max(y, 0)
       bottom = Math.min(y + rows, @rows)
       return if left >= right || top >= bottom
       row = top
@@ -277,13 +277,13 @@ module Term::Render
     def compose(themes : Themes, space : BlendSpace) : Nil
       absorb
       stack
-      @themes = themes
-      @palette = themes.palette
+      @themes   = themes
+      @palette  = themes.palette
       @terminal = themes.terminal
-      @space = space
-      @depth = themes.depth
-      @indexed = themes.indexed?
-      @snap = themes.snap?
+      @space    = space
+      @depth    = themes.depth
+      @indexed  = themes.indexed?
+      @snap     = themes.snap?
       @backdrop = ColorSpace.coords(@palette.bg, space)
       @blocks.clear
       row = 0
@@ -357,22 +357,22 @@ module Term::Render
     end
 
     private def resolve(col : Int32, row : Int32) : Tile
-      ink = Accum.new
+      ink   = Accum.new
       field = Accum.new
-      rule = Accum.new
+      rule  = Accum.new
       glyph = 0_u32
       attrs = Attr::None
-      span = 1_u8
-      dx = 0_u8
+      span  = 1_u8
+      dx    = 0_u8
       flags = 0_u8
       owner = 0_u32
       exact = 0_u32
       under = 0_u32
-      link = 0_u32
+      link  = 0_u32
       found = false
       fixed = false
       lined = false
-      hole = false
+      hole  = false
       index = 0
       count = @row.size
       while index < count
@@ -386,21 +386,21 @@ module Term::Render
           hole = true
           break
         end
-        cell = plane.cell(x, row - @tops.unsafe_fetch(slot))
-        base = plane.base_cell
+        cell  = plane.cell(x, row - @tops.unsafe_fetch(slot))
+        base  = plane.base_cell
         power = @powers.unsafe_fetch(slot)
-        link = cell.link if link == 0_u32 && !found
+        link  = cell.link if link == 0_u32 && !found
         unless found
           source = cell.inked? ? cell : base
           if source.inked?
             found = true
             glyph = source.glyph
             attrs = source.attrs
-            span = source.span
-            dx = source.dx
+            span  = source.span
+            dx    = source.dx
             flags = source.cont? ? Tile::CONT : 0_u8
             owner = plane.serial
-            link = source.link if link == 0_u32
+            link  = source.link if link == 0_u32
             if source.exact?
               fixed = true
               exact = source.fg.value
@@ -408,7 +408,7 @@ module Term::Render
             end
             unless source.line.clear?
               lined = true
-              rule = ink
+              rule  = ink
               level = source.line.alpha / 255.0_f32 * power
               rule.add(grounded(source.line), level, @palette, @space) if level > 0.0_f32 && !rule.locked?
             end
@@ -416,7 +416,7 @@ module Term::Render
             ink.add(grounded(source.fg), level, @palette, @space) if level > 0.0_f32 && !ink.locked?
           end
         end
-        back = cell.bg.clear? ? base.bg : cell.bg
+        back  = cell.bg.clear? ? base.bg : cell.bg
         level = back.alpha / 255.0_f32 * power
         if level > 0.0_f32
           tone = grounded(back)
@@ -502,7 +502,7 @@ module Term::Render
         col = block.x + across
         next if col < 0 || col >= @cols
         index = block.y * @cols + col
-        tile = @tiles.unsafe_fetch(index)
+        tile  = @tiles.unsafe_fetch(index)
         next unless tile.span == block.span && tile.dx == across && tile.cont? == (across > 0)
         broken = !(sound && tile.owner == owner)
         next if broken == tile.broken?

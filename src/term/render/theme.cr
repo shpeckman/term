@@ -185,12 +185,12 @@ class ::Term
       property space           : BlendSpace
       property? extend_palette : Bool
 
-      property output : Proc(ByteBuilder) = -> : ByteBuilder { raise "Themes#output is not wired" }
-      property running : Proc(Bool) = -> { false }
-      property querier : Proc(Proc(Term::Palette?, Nil), Nil) = ->(done : Proc(Term::Palette?, Nil)) { done.call(nil) }
-      property ticker : Proc(Time::Span, Proc(Nil), Proc(Nil)) = ->(span : Time::Span, tick : Proc(Nil)) { -> { nil } }
-      property on_theme : Proc(String?, Nil) = ->(name : String?) { nil }
-      property on_palette : Proc(Nil) = -> { nil }
+      property output     : Proc(ByteBuilder)                      = -> : ByteBuilder { raise "Themes#output is not wired" }
+      property running    : Proc(Bool)                             = -> { false }
+      property querier    : Proc(Proc(Term::Palette?, Nil), Nil)   = ->(done : Proc(Term::Palette?, Nil)) { done.call(nil) }
+      property ticker     : Proc(Time::Span, Proc(Nil), Proc(Nil)) = ->(span : Time::Span, tick : Proc(Nil)) { -> { nil } }
+      property on_theme   : Proc(String?, Nil)                     = ->(name : String?) { nil }
+      property on_palette : Proc(Nil)                              = -> { nil }
 
       @dark        : String?
       @light       : String?

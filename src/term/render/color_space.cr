@@ -87,9 +87,9 @@ module Term::Render
 
     def from_lab(value : Triple) : UInt32
       fy = (value[0] + 16.0_f32) / 116.0_f32
-      x = lab_inverse(fy + value[1] / 500.0_f32) * WHITE_X
-      y = lab_inverse(fy)
-      z = lab_inverse(fy - value[2] / 200.0_f32) * WHITE_Z
+      x  = lab_inverse(fy + value[1] / 500.0_f32) * WHITE_X
+      y  = lab_inverse(fy)
+      z  = lab_inverse(fy - value[2] / 200.0_f32) * WHITE_Z
       from_linear({
         3.2404542_f32 * x - 1.5371385_f32 * y - 0.4985314_f32 * z,
         -0.9692660_f32 * x + 1.8760108_f32 * y + 0.0415560_f32 * z,
@@ -111,12 +111,12 @@ module Term::Render
 
     def from_oklab(value : Triple) : UInt32
       lightness = toe_inverse(value[0])
-      l = lightness + 0.3963377774_f32 * value[1] + 0.2158037573_f32 * value[2]
-      m = lightness - 0.1055613458_f32 * value[1] - 0.0638541728_f32 * value[2]
-      s = lightness - 0.0894841775_f32 * value[1] - 1.2914855480_f32 * value[2]
-      l = l * l * l
-      m = m * m * m
-      s = s * s * s
+      l         = lightness + 0.3963377774_f32 * value[1] + 0.2158037573_f32 * value[2]
+      m         = lightness - 0.1055613458_f32 * value[1] - 0.0638541728_f32 * value[2]
+      s         = lightness - 0.0894841775_f32 * value[1] - 1.2914855480_f32 * value[2]
+      l         = l * l * l
+      m         = m * m * m
+      s         = s * s * s
       from_linear({
         4.0767416621_f32 * l - 3.3077115913_f32 * m + 0.2309699292_f32 * s,
         -1.2684380046_f32 * l + 2.6097574011_f32 * m - 0.3413193965_f32 * s,

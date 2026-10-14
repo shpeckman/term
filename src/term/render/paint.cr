@@ -75,7 +75,7 @@ module Term::Render
       Role
     end
 
-    getter kind : Kind
+    getter kind  : Kind
     getter value : UInt32
     getter alpha : UInt8
 
@@ -180,7 +180,7 @@ module Term::Render
     FLAG = 0x8000_0000_u32
 
     @@segmenter : TermWidth::Segmenter = TermWidth::Segmenter::NARROW
-    @@ids = {} of Bytes => UInt32
+    @@ids      = {} of Bytes => UInt32
     @@clusters = [] of Bytes
 
     def segmenter : TermWidth::Segmenter
@@ -211,7 +211,7 @@ module Term::Render
       return point if length == cluster.size
       @@ids[cluster]? || begin
         owned = cluster.dup
-        id = FLAG | @@clusters.size.to_u32
+        id    = FLAG | @@clusters.size.to_u32
         @@clusters << owned
         @@ids[owned] = id
       end
@@ -239,7 +239,7 @@ module Term::Render
   module Links
     extend self
 
-    @@ids = {} of String => UInt32
+    @@ids  = {} of String => UInt32
     @@uris = [] of String
 
     def intern(uri : String) : UInt32
@@ -260,13 +260,13 @@ module Term::Render
     EXACT = 2_u8
 
     getter glyph : UInt32
-    getter fg : Paint
-    getter bg : Paint
-    getter line : Paint
-    getter link : UInt32
+    getter fg    : Paint
+    getter bg    : Paint
+    getter line  : Paint
+    getter link  : UInt32
     getter attrs : Attr
-    getter span : UInt8
-    getter dx : UInt8
+    getter span  : UInt8
+    getter dx    : UInt8
     getter flags : UInt8
 
     def initialize(@glyph : UInt32 = 0_u32, @fg : Paint = Paint::NONE, @bg : Paint = Paint::NONE,
@@ -317,19 +317,19 @@ module Term::Render
     LINES  = Attr::Underline | Attr::DoubleUnderline | Attr::CurlyUnderline | Attr::DottedUnderline |
              Attr::DashedUnderline | Attr::Reverse | Attr::Strike | Attr::Overline
 
-    getter glyph : UInt32
-    getter fg : UInt32
-    getter bg : UInt32
-    getter line : UInt32
-    getter link : UInt32
-    getter attrs : Attr
-    getter fg_kind : Kind
-    getter bg_kind : Kind
+    getter glyph     : UInt32
+    getter fg        : UInt32
+    getter bg        : UInt32
+    getter line      : UInt32
+    getter link      : UInt32
+    getter attrs     : Attr
+    getter fg_kind   : Kind
+    getter bg_kind   : Kind
     getter line_kind : Kind
-    getter span : UInt8
-    getter dx : UInt8
-    getter flags : UInt8
-    getter owner : UInt32
+    getter span      : UInt8
+    getter dx        : UInt8
+    getter flags     : UInt8
+    getter owner     : UInt32
 
     def initialize(@glyph : UInt32 = 0_u32, @fg : UInt32 = 0_u32, @bg : UInt32 = 0_u32,
                    @attrs : Attr = Attr::None, @fg_kind : Kind = Kind::Default,

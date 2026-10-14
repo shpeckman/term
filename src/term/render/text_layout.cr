@@ -108,7 +108,7 @@ module Term::Render
       while index < stop
         extent = segmenter.cluster_width(clusters.unsafe_fetch(index)).to_i
         return index if column < edge + (nearest ? (extent + 1) // 2 : extent)
-        edge  += extent
+        edge += extent
         index += 1
       end
       Math.min(index, stop)
@@ -121,7 +121,7 @@ module Term::Render
       while index > 0
         extent = segmenter.cluster_width(clusters.unsafe_fetch(index - 1)).to_i
         break if used + extent > cols
-        used  += extent
+        used += extent
         index -= 1
       end
       index
