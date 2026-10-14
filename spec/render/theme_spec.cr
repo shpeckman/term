@@ -78,7 +78,7 @@ describe Term::Render::Themes do
   it "accepts an explicit palette and rejects malformed input" do
     stage = Stage.new
     table = Array.new(256) { |index| index * 0x010101 }
-    stage.themes.define("flat", palette: table, fg: "#ffffff", bg: Term::Color.rgb(0_u8, 0_u8, 0_u8))
+    stage.themes.define("flat", palette: table, fg: "#ffffff", bg: Term::Render::Paint.rgb(0_u8, 0_u8, 0_u8))
     stage.themes.use("flat")
     stage.themes.palette[200].should eq(0xc8c8c8_u32)
     stage.themes.palette.fg.should eq(0xffffff_u32)

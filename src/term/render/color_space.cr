@@ -39,8 +39,51 @@ module Term::Render
       (r.to_u32 << 16) | (g.to_u32 << 8) | b.to_u32
     end
 
-    def pack(color : Term::Color) : UInt32
-      pack((color.red >> 8).to_u8!, (color.green >> 8).to_u8!, (color.blue >> 8).to_u8!)
+    def parse(text : String) : Tuple(UInt32, UInt8)?
+      body, _, tail = text.partition('@')
+      opacity = tail.empty? ? 1.0 : tail.to_f?
+      return unless opacity
+      alpha = (opacity.clamp(0.0, 1.0) * 255).round.to_u8
+      if body.starts_with?('#') && body.size.in?(4, 7, 10, 13)
+        width = body.size // 3
+        r     = channel_hex(body, 1, width) || return
+        g     = channel_hex(body, 1 + width, width) || return
+        b     = channel_hex(body, 1 + width * 2, width) || return
+        {pack(r, g, b), alpha}
+      elsif body.starts_with?("rgb:")
+        parts = body.lchop("rgb:").split('/')
+        return unless parts.size == 3
+        r = channel_scaled(parts[0]) || return
+        g = channel_scaled(parts[1]) || return
+        b = channel_scaled(parts[2]) || return
+        {pack(r, g, b), alpha}
+      elsif body.starts_with?("rgbi:")
+        parts = body.lchop("rgbi:").split('/')
+        return unless parts.size == 3
+        r = channel_float(parts[0]) || return
+        g = channel_float(parts[1]) || return
+        b = channel_float(parts[2]) || return
+        {pack(r, g, b), alpha}
+      end
+    end
+
+    private def channel_hex(body : String, offset : Int32, width : Int32) : UInt8?
+      body[offset, width].to_u16?(16).try do |value|
+        ((value << (16 - 4 * width)) >> 8).to_u8!
+      end
+    end
+
+    private def channel_scaled(digits : String) : UInt8?
+      return unless digits.size.in?(1..4)
+      digits.to_u32?(16).try do |value|
+        ((value * 0xffff_u32 // ((1_u32 << (4 * digits.size)) - 1)) >> 8).to_u8!
+      end
+    end
+
+    private def channel_float(part : String) : UInt8?
+      part.to_f?.try do |value|
+        ((value.clamp(0.0, 1.0) * 0xffff).round.to_u16 >> 8).to_u8!
+      end
     end
 
     @[AlwaysInline]

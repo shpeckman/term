@@ -1,4 +1,12 @@
 # src/term/render.cr
+require "byte_builder"
+require "termwidth"
+
+class Term
+  module Render
+  end
+end
+
 require "./render/color_space"
 require "./render/palette"
 require "./render/paint"

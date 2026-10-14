@@ -31,12 +31,14 @@ Add the dependency to your `shard.yml`:
 dependencies:
   term:
     github: shpeckman/term
+
 ```
 
 Then run `shards install` and:
 
 ```crystal
 require "term"
+
 ```
 
 ## Quick start
@@ -54,12 +56,13 @@ Term.open do |term|
     end
   end
 end
+
 ```
 
-- `Term.open` probes what the terminal supports, enables it, yields, and restores the terminal afterwards. The terminal is also restored on an exception, on `exit`, and on `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT`.
-- `term.events` is a `Channel(Term::Event)`. Read it from one fiber; `receive?` returns `nil` once the terminal is closed.
-- `term.print` and `term <<` are safe to call from any fiber. At this level `term` does no drawing for you: cursor movement and text styling are your own escape sequences — or use the [`Term::Render`](#rendering) layer, which draws whole frames for you.
-- Queries such as clipboard reads block the calling fiber and return the answer, or `nil` on timeout.
+* `Term.open` probes what the terminal supports, enables it, yields, and restores the terminal afterwards. The terminal is also restored on an exception, on `exit`, and on `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT`.
+* `term.events` is a `Channel(Term::Event)`. Read it from one fiber; `receive?` returns `nil` once the terminal is closed.
+* `term.print` and `term <<` are safe to call from any fiber. At this level `term` does no drawing for you: cursor movement and text styling are your own escape sequences — or use the [`Term::Render`](https://www.google.com/search?q=%23rendering) layer, which draws whole frames for you.
+* Queries such as clipboard reads block the calling fiber and return the answer, or `nil` on timeout.
 
 ## How it behaves
 
@@ -72,6 +75,7 @@ term.features.keyboard?     # Kitty keyboard protocol
 term.features.pixels?       # pixel mouse coordinates
 term.features.paste?        # MIME-typed paste events
 term.features.resize?       # in-band resize reports
+
 ```
 
 The full set is `Keyboard`, `Resize`, `Motion`, `Pixels`, `Focus`, `Visibility`, `ColorScheme` and `Paste`.
@@ -114,6 +118,7 @@ config.sequence("leader-f", ' ', 'f')
 Term.open(config) do |term|
   # ...
 end
+
 ```
 
 | Option                       | Default   | Meaning                                                                                                    |
@@ -147,9 +152,9 @@ end
 
 Bindings:
 
-- `chord(name, *keys)` fires when all keys are held together.
-- `sequence(name, *keys)` fires when the keys are pressed one after another.
-- `shortcut(name, key, mods = Mods::None, physical: false)` fires on a key with modifiers. With `physical: true` it matches the key's position on a standard layout, so it works regardless of keyboard layout.
+* `chord(name, *keys)` fires when all keys are held together.
+* `sequence(name, *keys)` fires when the keys are pressed one after another.
+* `shortcut(name, key, mods = Mods::None, physical: false)` fires on a key with modifiers. With `physical: true` it matches the key's position on a standard layout, so it works regardless of keyboard layout.
 
 A key is a `Char`, a `Term::Named` or a raw key code. Bindings arrive as `Term::Binding` events carrying the name.
 
@@ -164,13 +169,14 @@ quit = Term::Shortcut.parse("ctrl+q", physical: true)
 # in the event loop
 when Term::Key
   save_file if event.press? && save.matches?(event)
+
 ```
 
-- `Shortcut.parse(spec, physical: false)` reads modifiers and a key joined by `+`. An unknown modifier or key raises `ArgumentError`.
-- **Modifiers** are the `Term::Mods` names (`shift`, `alt`, `ctrl`, `super`, `hyper`, `meta`), plus `control`, `cmd` and `command`. Case does not matter.
-- **Keys** are a single character, a `Term::Named` name in any casing (`enter`, `page_up`, `PageUp`, `f13`, `kp_5`), or `space`, `esc` or `return`. A trailing `+` is the plus key, as in `ctrl++`.
-- `matches?(key)` applies the same rule as a configured shortcut: lock modifiers are ignored, and `physical` compares the key's position on a standard layout.
-- **Shift is consumed when the terminal reports the shifted character.** Write `ctrl+S`, not `ctrl+shift+s`, for a letter, and `ctrl++`, not `ctrl+shift+=`. The same holds for `config.shortcut`.
+* `Shortcut.parse(spec, physical: false)` reads modifiers and a key joined by `+`. An unknown modifier or key raises `ArgumentError`.
+* **Modifiers** are the `Term::Mods` names (`shift`, `alt`, `ctrl`, `super`, `hyper`, `meta`), plus `control`, `cmd` and `command`. Case does not matter.
+* **Keys** are a single character, a `Term::Named` name in any casing (`enter`, `page_up`, `PageUp`, `f13`, `kp_5`), or `space`, `esc` or `return`. A trailing `+` is the plus key, as in `ctrl++`.
+* `matches?(key)` applies the same rule as a configured shortcut: lock modifiers are ignored, and `physical` compares the key's position on a standard layout.
+* **Shift is consumed when the terminal reports the shifted character.** Write `ctrl+S`, not `ctrl+shift+s`, for a letter, and `ctrl++`, not `ctrl+shift+=`. The same holds for `config.shortcut`.
 
 ## Events
 
@@ -232,20 +238,20 @@ Everything on `term.events` is one of the following.
 
 ### Lifecycle and output
 
-| Method                                                           | Returns                                     |
-|------------------------------------------------------------------|---------------------------------------------|
-| `Term.open(config, input = STDIN, output = STDOUT) { \|term\| }` | The block's value                           |
-| `Term.new(config, input, output)`                                | A `Term` you must `close`                   |
-| `close`, `closed?`                                               |                                             |
-| `events`                                                         | `Channel(Term::Event)`                      |
-| `features`                                                       | `Term::Feature` flags                       |
-| `print(*objects)`, `<<(object)`                                  |                                             |
-| `suspend`, `resume`                                              | Leave and re-enter the terminal modes       |
-| `refresh`                                                        | Re-read the window size and emit a `Resize` |
-| `Term.restore`, `Term.suspend`, `Term.resume`, `Term.refresh`    | The same for every open `Term`              |
-| `supports?(mode)`                                                | `Bool?` for a DEC private mode              |
-| `window_size`, `cell_size`                                       | `Term::Size?` in pixels                     |
-| `query_visibility`, `query_color_scheme`                         | Nothing; the answer arrives as an event     |
+| Method                                                         | Returns                                     |
+|----------------------------------------------------------------|---------------------------------------------|
+| `Term.open(config, input = STDIN, output = STDOUT) { |term| }` | The block's value                           |
+| `Term.new(config, input, output)`                              | A `Term` you must `close`                   |
+| `close`, `closed?`                                             |                                             |
+| `events`                                                       | `Channel(Term::Event)`                      |
+| `features`                                                     | `Term::Feature` flags                       |
+| `print(*objects)`, `<<(object)`                                |                                             |
+| `suspend`, `resume`                                            | Leave and re-enter the terminal modes       |
+| `refresh`                                                      | Re-read the window size and emit a `Resize` |
+| `Term.restore`, `Term.suspend`, `Term.resume`, `Term.refresh`  | The same for every open `Term`              |
+| `supports?(mode)`                                              | `Bool?` for a DEC private mode              |
+| `window_size`, `cell_size`                                     | `Term::Size?` in pixels                     |
+| `query_visibility`, `query_color_scheme`                       | Nothing; the answer arrives as an event     |
 
 ### Pointer shape
 
@@ -256,6 +262,7 @@ term.pop_pointer
 term.reset_pointer
 term.pointer                      # => "pointer", or nil when none is set
 term.pointer_support(:grab, :zoom_in)  # => [true, false]
+
 ```
 
 `Term::Shape` holds the thirty CSS-derived names, from `Alias` to `ZoomOut`. `pointer(which)` accepts `:current`, `:default` or `:grabbed`.
@@ -272,11 +279,12 @@ palette = term.colors("foreground", "cursor", 7)
 palette.try &.["foreground"]      # => Term::Color or nil
 term.confirm_color("background", "#102030")
 term.pop_colors
+
 ```
 
-- A key is a number `0` to `255` for the ANSI table, or a name such as `foreground`, `background`, `cursor`, `cursor_text`, `selection_background`, `selection_foreground`, `visual_bell`, `transparent_background_color1` to `7`.
-- `colors` returns a `Term::Palette` with `[]`, `[]?`, `keys`, `size` and `unknown` (keys the terminal did not recognise). A color with no defined value is `nil`.
-- `Term::Color` has 16-bit `red`, `green`, `blue` and a float `alpha`. `Color.parse` accepts `rgb:`, `#hex`, `rgbi:`, an `@alpha` suffix and 658 color names.
+* A key is a number `0` to `255` for the ANSI table, or a name such as `foreground`, `background`, `cursor`, `cursor_text`, `selection_background`, `selection_foreground`, `visual_bell`, `transparent_background_color1` to `7`.
+* `colors` returns a `Term::Palette` with `[]`, `[]?`, `keys`, `size` and `unknown` (keys the terminal did not recognise). A color with no defined value is `nil`.
+* `Term::Color` has 16-bit `red`, `green`, `blue` and a float `alpha`. `Color.parse` accepts `rgb:`, `#hex`, `rgbi:`, an `@alpha` suffix and 658 color names.
 
 ### Clipboard
 
@@ -286,6 +294,7 @@ term.clipboard_write({"text/html" => "<b>hi</b>".to_slice, "text/plain" => "hi".
 term.clipboard_mimes                          # => ["text/plain", "image/png"]
 term.clipboard_read("text/plain").try(&.text)
 File.open("clip.png", "w") { |file| term.clipboard_read("image/png", into: file) }
+
 ```
 
 Handling a paste:
@@ -293,11 +302,12 @@ Handling a paste:
 ```crystal
 when Term::Paste
   text = term.clipboard_read(event, "text/plain").try(&.text)
+
 ```
 
-- `copy` and `clipboard_write` return a `Term::Status`: `Done`, or `EIO`, `EINVAL`, `ENOSYS`, `EPERM`, `EBUSY`, `EFBIG`.
-- `clipboard_read` returns a `Term::Clipboard` with `status`, `done?`, `data` (a hash of MIME type to bytes) and `text`.
-- Pass `primary: true` for the primary selection. Item values may be `Bytes` or an `IO`. With `into:`, data is streamed to the sink and `data` is empty.
+* `copy` and `clipboard_write` return a `Term::Status`: `Done`, or `EIO`, `EINVAL`, `ENOSYS`, `EPERM`, `EBUSY`, `EFBIG`.
+* `clipboard_read` returns a `Term::Clipboard` with `status`, `done?`, `data` (a hash of MIME type to bytes) and `text`.
+* Pass `primary: true` for the primary selection. Item values may be `Bytes` or an `IO`. With `into:`, data is streamed to the sink and `data` is empty.
 
 ### Graphics
 
@@ -307,6 +317,7 @@ term.image(Term::Pixels.png(png), id: 1, placement: Term::Placement.new(columns:
 term.place(id: 1, placement: Term::Placement.new(id: 2, z: -1))
 term.delete_images(:id, id: 1, free: true)
 term.supports_graphics?
+
 ```
 
 | Method                                                                                                   | Returns                      |
@@ -323,19 +334,20 @@ term.supports_graphics?
 | `Term.place_code(id:, number:, placement:, quiet:)`                                                      | `String`                     |
 | `Term.delete_code(target, free:, id:, number:, placement:, x:, y:, z:)`                                  | `String`                     |
 
-- **Pixel data** is a `Term::Pixels`: `Pixels.png(data)`, `Pixels.rgb(data, width, height)`, `Pixels.rgba(data, width, height)` take `Bytes` or an `IO`, with `compress: true` for zlib. `Pixels.at(path, medium)` sends a file, temp file or shared memory name; `Pixels.temp(data)` and `Pixels.shared(data)` create one for you.
-- **Layout** is a `Term::Placement`: `id`, `x`, `y`, `width`, `height` (source rectangle), `offset_x`, `offset_y`, `columns`, `rows`, `z`, `hold_cursor`, `placeholder`, `parent`, `parent_placement`, `shift_x`, `shift_y`.
-- **Replies.** A call waits for the terminal's `Ack` only when you give an `id` or `number` and leave `quiet` at `:none`. `Ack` has `ok?`, `error`, `image`, `number` and `placement`.
-- **`animate` never waits**, because terminals do not acknowledge it on success. Errors arrive as `Ack` events.
-- **Delete targets:** `Visible`, `Id`, `Number`, `Cursor`, `Frames`, `Cell`, `CellZ`, `Range`, `Column`, `Row`, `Z`. `free: true` also frees the stored data.
-- **Placeholders** are limited to 297 rows and columns.
-- **Codes.** `Term.place_code` and `Term.delete_code` take the arguments of `place` and `delete_images` and return the escape sequence instead of sending it. Use them to put a placement inside output you write yourself, such as a frame wrapped in synchronized output, where it must follow your own cursor movement. Pass `quiet: :all` (or `:ok`); nothing waits for the reply, so it would otherwise arrive as an `Ack` event.
+* **Pixel data** is a `Term::Pixels`: `Pixels.png(data)`, `Pixels.rgb(data, width, height)`, `Pixels.rgba(data, width, height)` take `Bytes` or an `IO`, with `compress: true` for zlib. `Pixels.at(path, medium)` sends a file, temp file or shared memory name; `Pixels.temp(data)` and `Pixels.shared(data)` create one for you.
+* **Layout** is a `Term::Placement`: `id`, `x`, `y`, `width`, `height` (source rectangle), `offset_x`, `offset_y`, `columns`, `rows`, `z`, `hold_cursor`, `placeholder`, `parent`, `parent_placement`, `shift_x`, `shift_y`.
+* **Replies.** A call waits for the terminal's `Ack` only when you give an `id` or `number` and leave `quiet` at `:none`. `Ack` has `ok?`, `error`, `image`, `number` and `placement`.
+* **`animate` never waits**, because terminals do not acknowledge it on success. Errors arrive as `Ack` events.
+* **Delete targets:** `Visible`, `Id`, `Number`, `Cursor`, `Frames`, `Cell`, `CellZ`, `Range`, `Column`, `Row`, `Z`. `free: true` also frees the stored data.
+* **Placeholders** are limited to 297 rows and columns.
+* **Codes.** `Term.place_code` and `Term.delete_code` take the arguments of `place` and `delete_images` and return the escape sequence instead of sending it. Use them to put a placement inside output you write yourself, such as a frame wrapped in synchronized output, where it must follow your own cursor movement. Pass `quiet: :all` (or `:ok`); nothing waits for the reply, so it would otherwise arrive as an `Ack` event.
 
 ### Desktop notifications
 
 ```crystal
 id = term.notify("Build finished", "2 warnings", buttons: ["Open", "Dismiss"], report: true)
 term.close_notification(id)
+
 ```
 
 | Method                                                  | Returns                                                   |
@@ -378,6 +390,7 @@ when Term::Drop
     text = term.drop_data(index).try(&.text)
     term.drop_finish(:copy)
   end
+
 ```
 
 | Method                                              | Returns           |
@@ -390,10 +403,10 @@ when Term::Drop
 | `drop_save(index, entry, destination)`              | `Bool`            |
 | `drop_finish(operation)`                            |                   |
 
-- Indexes are 1-based positions in the `Drop` event's MIME list.
-- `Term::Operation` is a flag set of `Copy` and `Move`; `Operation::None` rejects.
-- `DropData` has `data`, `text`, `error`, `ok?`, `remote?`, `symlink?`, `directory?`, `handle`, `entries` and `uris`.
-- With `remote: true`, files dropped from another machine can be fetched: request the `text/uri-list` type, and if `remote?` is true, use `drop_save(index, entry, destination)` to download entry `entry` of the list, including whole directory trees.
+* Indexes are 1-based positions in the `Drop` event's MIME list.
+* `Term::Operation` is a flag set of `Copy` and `Move`; `Operation::None` rejects.
+* `DropData` has `data`, `text`, `error`, `ok?`, `remote?`, `symlink?`, `directory?`, `handle`, `entries` and `uris`.
+* With `remote: true`, files dropped from another machine can be fetched: request the `text/uri-list` type, and if `remote?` is true, use `drop_save(index, entry, destination)` to download entry `entry` of the list, including whole directory trees.
 
 ### Drag and drop: sending
 
@@ -411,6 +424,7 @@ when Term::Drag
   when .data_request?
     term.drag_data(event.index, "dragged text".to_slice)
   end
+
 ```
 
 | Method                                                                   | Returns                             |
@@ -429,13 +443,13 @@ when Term::Drag
 | `dnd_support`, `supports_dnd?`                                           | `Hash(String, String)?`, `Bool`     |
 | `Term.uri_list(paths)`, `Term.machine_id`                                | `String`, `String?`                 |
 
-- MIME indexes are 0-based here; image numbers start at 1.
-- Data may be `Bytes` or an `IO`.
-- To drag files to another machine, call `drag_files(paths)`, pre-send the returned text as `text/uri-list`, and the terminal's file requests are answered for you.
+* MIME indexes are 0-based here; image numbers start at 1.
+* Data may be `Bytes` or an `IO`.
+* To drag files to another machine, call `drag_files(paths)`, pre-send the returned text as `text/uri-list`, and the terminal's file requests are answered for you.
 
 ## Rendering
 
-`Term::Render` is an optional layer on top of the protocol API: an off-screen cell buffer model with compositing, damage tracking and differential ANSI output. It has no opinion about your application loop — you hand it a `ByteBuilder` per frame.
+`Term::Render` is an optional layer on top of the protocol API: an off-screen cell buffer model with compositing, damage tracking and differential ANSI output. It can be used standalone as a decoupled component or alongside `Term`. It has no opinion about your application loop — you hand it a `ByteBuilder` per frame.
 
 ```crystal
 compositor = Term::Render::Compositor.new
@@ -448,15 +462,16 @@ frame = ByteBuilder.new
 compositor.enter(frame)                # hides the cursor; call once
 compositor.render(frame)               # emits only what changed
 term.print String.new(frame.written)
+
 ```
 
-- **`Compositor`** flattens all planes into a cell grid and emits the diff: SGR styling (including 256-color and truecolor), OSC 8 hyperlinks, cursor shape and position, kitty graphics placements and synchronized output (mode 2026, when you set `sync = true`). Scroll hints from `Plane#scroll` become terminal scroll-region sequences where possible. `leave(frame)` restores the cursor and unplaces images.
-- **`Plane`** is a clipped, nestable drawing surface with `put`, `fill`, `erase`, `scroll`, z-ordering (`Layer`), opacity, a text cursor and image sprites. `Plane` implements the `Term::Render::Canvas` interface.
-- **`Paint` / `Attr` / `Cell` / `Tile`** are the style vocabulary: foreground/background/underline colors (default, palette index or RGB) plus attribute flags. `Paint.role(n)` defers a color to the theme's role table.
-- **`Palette`** models the 256 terminal colors with nearest-color lookup, ramps and generation from a base16 set; **`ColorSpace`** does the blending math in linear, Lab or Oklab space.
-- **`Themes`** holds named `Theme`s, resolves role paints for the compositor, probes the terminal palette (via an injected `querier`), pushes palette changes with OSC 4/10/11 and animates transitions (via an injected `ticker`). It is framework-agnostic: output goes to an injected `output : Proc(ByteBuilder)`, change notifications to `on_theme` / `on_palette` callbacks. `Themes.survey(term)` reads the palette from a live `Term`.
-- **`TextLayout`** measures, wraps and truncates text by grapheme cluster (`TermWidth`), with horizontal alignment helpers. See [Text layout](#text-layout).
-- **`Graphemes`** and **`Links`** intern repeated grapheme clusters and OSC 8 targets so cells stay a fixed size. `Graphemes` also owns the width profile every measurement uses.
+* **`Compositor`** flattens all planes into a cell grid and emits the diff: SGR styling (including 256-color and truecolor), OSC 8 hyperlinks, cursor shape and position, kitty graphics placements and synchronized output (mode 2026, when you set `sync = true`). Scroll hints from `Plane#scroll` become terminal scroll-region sequences where possible. `leave(frame)` restores the cursor and unplaces images.
+* **`Plane`** is a clipped, nestable drawing surface with `put`, `fill`, `erase`, `scroll`, z-ordering (`Layer`), opacity, a text cursor and image sprites. `Plane` implements the `Term::Render::Canvas` interface.
+* **`Paint` / `Attr` / `Cell` / `Tile**` are the style vocabulary: foreground/background/underline colors (default, palette index or RGB) plus attribute flags. `Paint.role(n)` defers a color to the theme's role table.
+* **`Palette`** models the 256 terminal colors with nearest-color lookup, ramps and generation from a base16 set; **`ColorSpace`** does the blending math in linear, Lab or Oklab space.
+* **`Themes`** holds named `Theme`s, resolves role paints for the compositor, probes the terminal palette (via an injected `querier`), pushes palette changes with OSC 4/10/11 and animates transitions (via an injected `ticker`). It is framework-agnostic: output goes to an injected `output : Proc(ByteBuilder)`, change notifications to `on_theme` / `on_palette` callbacks. `Themes.survey(term)` reads the palette from a live `Term`.
+* **`TextLayout`** measures, wraps and truncates text by grapheme cluster (`TermWidth`), with horizontal alignment helpers. See [Text layout](https://www.google.com/search?q=%23text-layout).
+* **`Graphemes`** and **`Links`** intern repeated grapheme clusters and OSC 8 targets so cells stay a fixed size. `Graphemes` also owns the width profile every measurement uses.
 
 ### Text layout
 
@@ -475,54 +490,56 @@ layout.width(cells, 1, 3)                  # => 3
 layout.index(cells, 2)                     # => 1
 layout.fit_tail(cells, 3)                  # => 2
 layout.cluster_class("_")                  # => Term::Render::CharClass::Word
+
 ```
 
-| Method                                                    | Returns                                                                                                    |
-|-----------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-| `width(text)`                                             | Cells                                                                                                      |
-| `width(clusters, from = 0, to = clusters.size)`           | Cells of `clusters[from...to]`                                                                             |
-| `cluster_width(cluster)`                                  | Cells of one cluster                                                                                       |
-| `cluster_class(cluster)`                                  | `CharClass`: `Other`, `Space`, `Word` or `Punct`, from the cluster's first codepoint                       |
-| `clusters(text)`                                          | `Array(String)` of grapheme clusters                                                                       |
-| `lines(text)`                                             | `text` split on newlines                                                                                   |
-| `wrap(text, width, mode = Wrap::Word)`                    | `Array(String)` of lines; see below                                                                        |
-| `truncate(text, width, tail = "")`                        | `text` cut to `width` cells, `tail` included, never splitting a cluster                                    |
-| `expand_tabs(text, size = 8)`                             | `text` with tabs expanded to tab stops                                                                     |
-| `column(text, index)`                                     | Cells before cluster `index`                                                                               |
-| `index(text, column, nearest = false)`                    | The cluster covering `column`; with `nearest`, the closest boundary (for mouse hit-testing)                |
+| Method                                                                   | Returns                                                                                                  |
+|--------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
+| `width(text)`                                                            | Cells                                                                                                    |
+| `width(clusters, from = 0, to = clusters.size)`                          | Cells of `clusters[from...to]`                                                                           |
+| `cluster_width(cluster)`                                                 | Cells of one cluster                                                                                     |
+| `cluster_class(cluster)`                                                 | `CharClass`: `Other`, `Space`, `Word` or `Punct`, from the cluster's first codepoint                     |
+| `clusters(text)`                                                         | `Array(String)` of grapheme clusters                                                                     |
+| `lines(text)`                                                            | `text` split on newlines                                                                                 |
+| `wrap(text, width, mode = Wrap::Word)`                                   | `Array(String)` of lines; see below                                                                      |
+| `truncate(text, width, tail = "")`                                       | `text` cut to `width` cells, `tail` included, never splitting a cluster                                  |
+| `expand_tabs(text, size = 8)`                                            | `text` with tabs expanded to tab stops                                                                   |
+| `column(text, index)`                                                    | Cells before cluster `index`                                                                             |
+| `index(text, column, nearest = false)`                                   | The cluster covering `column`; with `nearest`, the closest boundary (for mouse hit-testing)              |
 | `index(clusters, column, from = 0, to = clusters.size, nearest = false)` | The same over `clusters[from...to]`, with `column` counted from `from`; returns an index into `clusters` |
-| `fit_tail(clusters, cols, to = clusters.size)`            | The smallest start index whose clusters up to `to` fit in `cols` cells                                     |
-| `offset(text, width, align)`                              | Leading cells for a `HorizontalAlignment`                                                                  |
+| `fit_tail(clusters, cols, to = clusters.size)`                           | The smallest start index whose clusters up to `to` fit in `cols` cells                                   |
+| `offset(text, width, align)`                                             | Leading cells for a `HorizontalAlignment`                                                                |
 
 Wrapping:
 
-- Newlines (LF and CRLF) always end a line, and blank lines are kept.
-- `Wrap::Word` breaks after white space, never at a no-break space; spaces at a break are dropped. A word longer than the line is broken between clusters.
-- `Wrap::Grapheme` breaks at any cluster.
-- A width of `0` or less only splits on newlines.
+* Newlines (LF and CRLF) always end a line, and blank lines are kept.
+* `Wrap::Word` breaks after white space, never at a no-break space; spaces at a break are dropped. A word longer than the line is broken between clusters.
+* `Wrap::Grapheme` breaks at any cluster.
+* A width of `0` or less only splits on newlines.
 
 Widths follow `Graphemes.profile`, a `TermWidth::WidthProfile` (`TermWidth::WidthProfile::UNICODE` by default). Setting it, for example to `UNICODE_WIDE` for a terminal that draws ambiguous-width characters double width, changes every later measurement and `Plane#put`; planes already drawn keep their cells until you redraw them. `Graphemes.segmenter` exposes the underlying `TermWidth::Segmenter` for lower-level positioning.
 
 ## TTY and PTY
 
-Terminal modes, window sizes, process groups and pseudo-terminals come from the [`tty`](https://github.com/shpeckman/tty) shard, which `term` requires. Its `TTY` module is available as soon as you `require "term"`:
+Terminal modes, window sizes, process groups and pseudo-terminals come from the [`tty`](https://www.google.com/url?sa=E&source=gmail&q=https://github.com/shpeckman/tty) shard, which `term` requires. Its `TTY` module is available as soon as you `require "term"`:
 
 ```crystal
 output, status = TTY::PTY.run("sh", ["-c", "stty size"], winsize: TTY::Winsize.new(24_u16, 80_u16))
 output             # "24 80\n"
 status.exit_code   # 0
+
 ```
 
 `Term` uses it for the raw mode it enters on open and restores on close, the window size it reads at startup and on `refresh`, and the process-group stop behind Ctrl-Z. Failures in those calls are ignored, as when the terminal is already gone at exit.
 
 ## Limitations
 
-- **Verified against the protocol documents and kitty's source, not a running kitty.** The test suite plays the terminal's side itself.
-- **macOS is untested; Windows is unsupported.**
-- **Signal handlers are global.** See [Signals and job control](#signals-and-job-control).
-- **`drop_save` trusts the terminal.** It creates symlinks with the target it is given, overwrites existing files, and leaves a partial tree behind on failure.
-- **No multiplexer passthrough.** Under tmux the kitty protocols are not wrapped and will be swallowed.
-- **Some data is held in memory:** compressed image data, notification icons, and clipboard reads and dropped data when no `into:` sink is given.
+* **Verified against the protocol documents and kitty's source, not a running kitty.** The test suite plays the terminal's side itself.
+* **macOS is untested; Windows is unsupported.**
+* **Signal handlers are global.** See [Signals and job control](https://www.google.com/search?q=%23signals-and-job-control).
+* **`drop_save` trusts the terminal.** It creates symlinks with the target it is given, overwrites existing files, and leaves a partial tree behind on failure.
+* **No multiplexer passthrough.** Under tmux the kitty protocols are not wrapped and will be swallowed.
+* **Some data is held in memory:** compressed image data, notification icons, and clipboard reads and dropped data when no `into:` sink is given.
 
 ## Development
 
@@ -530,6 +547,7 @@ Run the suite once:
 
 ```sh
 crystal spec
+
 ```
 
 The suite drives `Term` over pipes and real pseudo-terminals. The child-process examples read `/proc` and so run on Linux only.
@@ -538,6 +556,7 @@ Run it thoroughly before a release:
 
 ```sh
 spec/run.sh
+
 ```
 
 `spec/run.sh` builds the suite three ways (default, `-Dexecution_context` and `--release`) and, for each build, runs it in defined order, in random order with several seeds, and one example at a time. Isolated runs catch examples that only pass because of what ran before them. A failing run prints the tail of its output, including the seed for random-order runs, and the script exits non-zero.
@@ -551,8 +570,11 @@ spec/run.sh
 
 ```sh
 ONLY=default SEEDS=20 spec/run.sh
+
 ```
 
-Keep the spec file free of top-level local variables.  
-They are visible inside every `describe` and `it` block, and on Crystal 1.21.1 a top-level `term` next to a top-level `config` made an example read the wrong `Term` inside a nested captured block.  
+Keep the spec file free of top-level local variables.
+
+They are visible inside every `describe` and `it` block, and on Crystal 1.21.1 a top-level `term` next to a top-level `config` made an example read the wrong `Term` inside a nested captured block.
+
 The child-process scenario lives in a method for that reason.

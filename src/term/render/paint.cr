@@ -108,6 +108,10 @@ module Term::Render
       new(Kind::RGB, rgb & 0xFFFFFF_u32, alpha)
     end
 
+    def self.rgb(r : UInt8, g : UInt8, b : UInt8, alpha : Float64 = 1.0) : Paint
+      new(Kind::RGB, ColorSpace.pack(r, g, b), (alpha.clamp(0.0, 1.0) * 255).round.to_u8)
+    end
+
     def self.role(slot : Int32) : Paint
       new(Kind::Role, slot.to_u32)
     end
@@ -128,10 +132,6 @@ module Term::Render
       value
     end
 
-    def self.of(value : Term::Color, default : Kind) : Paint
-      rgb(ColorSpace.pack(value), (value.alpha.clamp(0.0, 1.0) * 255).round.to_u8)
-    end
-
     def self.of(value : Int, default : Kind) : Paint
       index(value)
     end
@@ -143,8 +143,8 @@ module Term::Render
         return fixed
       end
       if name.starts_with?('#') || name.starts_with?("rgb")
-        color = Term::Color.parse(name) || raise ArgumentError.new("invalid color #{name.inspect}")
-        return of(color, default)
+        rgb, alpha = ColorSpace.parse(name) || raise ArgumentError.new("invalid color #{name.inspect}")
+        return rgb(rgb, alpha)
       end
       role(name)
     end
