@@ -161,9 +161,9 @@ describe Term::Render::Plane do
 end
 
 private def built_placeholder(row : Int32, col : Int32, high : Int32) : String
-  marks = Term::DIACRITICS
+  marks = Term::Render::DIACRITICS
   String.build do |text|
-    text << Term::PLACEHOLDER << marks[row].chr << marks[col].chr
+    text << Term::Render::PLACEHOLDER << marks[row].chr << marks[col].chr
     text << marks[high].chr if high > 0
   end
 end

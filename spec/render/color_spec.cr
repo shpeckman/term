@@ -115,7 +115,7 @@ describe Term::Render::Paint do
     Term::Render::Paint.fg(:background).kind.should eq(Term::Render::Paint::Kind::Background)
     Term::Render::Paint.bg(4).should eq(Term::Render::Paint.index(4))
     Term::Render::Paint.fg("#ff8800").should eq(Term::Render::Paint.rgb(0xff8800_u32))
-    Term::Render::Paint.fg(Term::Color.rgb(1_u8, 2_u8, 3_u8, 0.5)).should eq(Term::Render::Paint.rgb(0x010203_u32, 128_u8))
+    Term::Render::Paint.fg(Term::Render::Paint.rgb(1_u8, 2_u8, 3_u8, 0.5)).should eq(Term::Render::Paint.rgb(0x010203_u32, 128_u8))
     Term::Render::Paint.bg({:surface, 0.5}).should eq(Term::Render::Paint.new(Term::Render::Paint::Kind::Role, 0_u32, 128_u8))
     Term::Render::Paint.fg(:none).clear?.should be_true
     Term::Render::Paint.fg(:accent).should eq(Term::Render::Paint.role(Term::Render::Roles::Core::Accent.value))

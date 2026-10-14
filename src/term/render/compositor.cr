@@ -187,8 +187,17 @@ module Term::Render
     end
 
     private def unplace(target : ByteBuilder, sprite : Sprite) : Nil
-      target.str(Term.delete_code(Term::Delete::Id, id: sprite.image_id, placement: sprite.placement_id))
+      target.str("\e_Ga=d,d=i,i=").int(sprite.image_id).str(",p=").int(sprite.placement_id).st
       sprite.placed = nil
+    end
+
+    private def place_sprite(target : ByteBuilder, sprite : Sprite, spot : Sprite::Placement) : Nil
+      target.str("\e_Ga=p,i=").int(sprite.image_id).str(",q=1,p=").int(sprite.placement_id)
+      target.str(",x=").int(spot.left) if spot.left != 0
+      target.str(",y=").int(spot.top) if spot.top != 0
+      target.str(",w=").int(spot.width) if spot.width != 0
+      target.str(",h=").int(spot.height) if spot.height != 0
+      target.str(",c=").int(spot.cols).str(",r=").int(spot.rows).str(",z=").int(spot.z).str(",C=1").st
     end
 
     private def shift(target : ByteBuilder) : Nil
@@ -287,9 +296,7 @@ module Term::Render
           target.cursor_at(spot.row, spot.col)
           @row = spot.row
           @col = spot.col
-          target.str(Term.place_code(sprite.image_id, placement: Term::Placement.new(id: sprite.placement_id,
-            x: spot.left, y: spot.top, width: spot.width, height: spot.height, columns: spot.cols,
-            rows: spot.rows, z: spot.z, hold_cursor: true), quiet: Term::Quiet::Ok))
+          place_sprite(target, sprite, spot)
           sprite.placed = spot
         else
           unplace(target, sprite)

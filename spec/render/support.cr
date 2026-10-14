@@ -1,6 +1,6 @@
 # spec/render/support.cr
 require "spec"
-require "../../src/term"
+require "../../src/term/render"
 
 class Stage
   getter compositor : Term::Render::Compositor

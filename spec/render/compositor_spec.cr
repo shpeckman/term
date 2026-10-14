@@ -60,9 +60,10 @@ describe Term::Render::Pile do
     stage = Stage.new
     low   = stage.plane(4, 1)
     scrim = stage.plane(2, 1)
-    low.put(0, 0, "ab", fg: Term::Color.rgb(255_u8, 255_u8, 255_u8), bg: Term::Color.rgb(255_u8, 255_u8, 255_u8))
-    low.put(2, 0, "cd", fg: Term::Color.rgb(255_u8, 255_u8, 255_u8), bg: Term::Color.rgb(255_u8, 255_u8, 255_u8))
-    scrim.fill(bg: Term::Color.rgb(0_u8, 0_u8, 0_u8, 0.5))
+    white = Term::Render::Paint.rgb(255_u8, 255_u8, 255_u8)
+    low.put(0, 0, "ab", fg: white, bg: white)
+    low.put(2, 0, "cd", fg: white, bg: white)
+    scrim.fill(bg: Term::Render::Paint.rgb(0_u8, 0_u8, 0_u8, 0.5))
     stage.frame
     stage.at(0, 0).text.should eq("a")
     rgb(stage.at(0, 0), true).should eq(0xbbbbbb_u32)
