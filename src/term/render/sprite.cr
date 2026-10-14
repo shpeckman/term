@@ -10,25 +10,25 @@ module Term::Render
       end
     end
 
-    getter plane : Plane
-    getter image_id : UInt32
+    getter plane        : Plane
+    getter image_id     : UInt32
     getter placement_id : UInt32
-    getter x : Int32
-    getter y : Int32
-    getter cols : Int32
-    getter rows : Int32
-    getter width : Int32
-    getter height : Int32
-    getter live : Placement?
-    getter? disposed : Bool
+    getter x            : Int32
+    getter y            : Int32
+    getter cols         : Int32
+    getter rows         : Int32
+    getter width        : Int32
+    getter height       : Int32
+    getter live         : Placement?
+    getter? disposed    : Bool
 
     property placed : Placement?
 
     def initialize(@plane : Plane, @pile : Pile, @image_id : UInt32, @placement_id : UInt32,
                    @x : Int32, @y : Int32, @cols : Int32, @rows : Int32,
                    @width : Int32, @height : Int32)
-      @live = nil
-      @placed = nil
+      @live     = nil
+      @placed   = nil
       @disposed = false
     end
 
@@ -52,7 +52,7 @@ module Term::Render
       return if @disposed
       scar
       @disposed = true
-      @live = nil
+      @live     = nil
       @plane.sprites.delete(self)
       @pile.retire(self)
     end
@@ -69,12 +69,12 @@ module Term::Render
 
     private def aim(screen_cols : Int32, screen_rows : Int32, depth : Int32) : Placement?
       return nil if @disposed || @cols <= 0 || @rows <= 0 || !@plane.shown? || @plane.strength <= 0.0_f32
-      edges = @plane.window
-      col = @plane.abs_x + @x
-      row = @plane.abs_y + @y
-      left = Math.max(Math.max(col, edges[0]), 0)
-      top = Math.max(Math.max(row, edges[1]), 0)
-      right = Math.min(Math.min(col + @cols, edges[2]), screen_cols)
+      edges  = @plane.window
+      col    = @plane.abs_x + @x
+      row    = @plane.abs_y + @y
+      left   = Math.max(Math.max(col, edges[0]), 0)
+      top    = Math.max(Math.max(row, edges[1]), 0)
+      right  = Math.min(Math.min(col + @cols, edges[2]), screen_cols)
       bottom = Math.min(Math.min(row + @rows, edges[3]), screen_rows)
       return nil if left >= right || top >= bottom
       z = BELOW_CELLS - depth

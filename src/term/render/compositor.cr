@@ -67,7 +67,7 @@ module Term::Render
       @caret_col    = -1
       @caret_row    = -1
       @caret_code   = 0
-      @pile.merger  = ->(under : Paint, over : Paint) { fuse(under, over) }
+      @pile.merger = ->(under : Paint, over : Paint) { fuse(under, over) }
     end
 
     def enter(target : ByteBuilder) : Nil

@@ -32,15 +32,15 @@ module Term::Render
     STOCK_BG = 0x000000_u32
 
     getter colors : Slice(UInt32)
-    property fg : UInt32
-    property bg : UInt32
+    property fg   : UInt32
+    property bg   : UInt32
 
     @coords : Slice(ColorSpace::Triple)?
 
     def initialize(@colors : Slice(UInt32), @fg : UInt32, @bg : UInt32)
       raise ArgumentError.new("a palette holds #{SIZE} colors") unless @colors.size == SIZE
       @coords = nil
-      @near = {} of UInt32 => UInt8
+      @near   = {} of UInt32 => UInt8
       @near16 = {} of UInt32 => UInt8
     end
 
@@ -62,14 +62,14 @@ module Term::Render
       16.times { |index| colors[index] = base16[index] }
       6.times do |r|
         along = r / 5.0_f32
-        c0 = ColorSpace.lerp(corners[0], corners[1], along)
-        c1 = ColorSpace.lerp(corners[2], corners[3], along)
-        c2 = ColorSpace.lerp(corners[4], corners[5], along)
-        c3 = ColorSpace.lerp(corners[6], corners[7], along)
+        c0    = ColorSpace.lerp(corners[0], corners[1], along)
+        c1    = ColorSpace.lerp(corners[2], corners[3], along)
+        c2    = ColorSpace.lerp(corners[4], corners[5], along)
+        c3    = ColorSpace.lerp(corners[6], corners[7], along)
         6.times do |g|
           across = g / 5.0_f32
-          c4 = ColorSpace.lerp(c0, c1, across)
-          c5 = ColorSpace.lerp(c2, c3, across)
+          c4     = ColorSpace.lerp(c0, c1, across)
+          c5     = ColorSpace.lerp(c2, c3, across)
           6.times do |b|
             colors[CUBE + 36 * r + 6 * g + b] = ColorSpace.from_lab(ColorSpace.lerp(c4, c5, b / 5.0_f32))
           end
@@ -143,17 +143,17 @@ module Term::Render
       if found = cache[rgb]?
         return found
       end
-      table = coords
+      table  = coords
       target = ColorSpace.oklab(rgb)
-      best = 0
-      least = Float32::MAX
-      index = 0
-      count = Math.min(limit, SIZE)
+      best   = 0
+      least  = Float32::MAX
+      index  = 0
+      count  = Math.min(limit, SIZE)
       while index < count
         gap = ColorSpace.distance(table.unsafe_fetch(index), target)
         if gap < least
           least = gap
-          best = index
+          best  = index
         end
         index += 1
       end

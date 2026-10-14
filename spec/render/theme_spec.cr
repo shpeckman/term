@@ -139,10 +139,10 @@ describe Term::Render::Themes do
   end
 
   it "animates a transition and finishes on the target palette" do
-    stage = Stage.new
+    stage  = Stage.new
     themes = stage.themes
-    watch = watching(themes)
-    ticks = ticking(themes)
+    watch  = watching(themes)
+    ticks  = ticking(themes)
     themes.depth = Term::Render::ColorDepth::TrueColor
     themes.define(:dark, base16: DARK16, fg: 0xcdd6f4, bg: 0x1e1e2e)
     themes.define(:light, base16: LIGHT16, fg: 0x4c4f69, bg: 0xeff1f5)
@@ -164,9 +164,9 @@ describe Term::Render::Themes do
   end
 
   it "collapses a transition when it cannot animate" do
-    stage = Stage.new
+    stage  = Stage.new
     themes = stage.themes
-    watch = watching(themes)
+    watch  = watching(themes)
     themes.depth = Term::Render::ColorDepth::Indexed256
     themes.delivery = Term::Render::ThemeDelivery::Local
     themes.define(:dark, base16: DARK16, fg: 0xcdd6f4, bg: 0x1e1e2e)
@@ -179,10 +179,10 @@ describe Term::Render::Themes do
   end
 
   it "follows the system scheme with the default duration while running" do
-    stage = Stage.new
+    stage  = Stage.new
     themes = stage.themes
-    watch = watching(themes)
-    ticks = ticking(themes)
+    watch  = watching(themes)
+    ticks  = ticking(themes)
     themes.depth = Term::Render::ColorDepth::TrueColor
     themes.duration = 40.milliseconds
     themes.define(:dark, base16: DARK16, fg: 0xcdd6f4, bg: 0x1e1e2e)
